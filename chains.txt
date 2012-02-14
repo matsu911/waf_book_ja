@@ -1,0 +1,393 @@
+
+=== 名前と拡張子に基づくファイル処理
+
+ファイル名や拡張子に基づいて自動的に変換される。
+
+==== ルールベースの繰返しのタスクジェネレータを暗黙のルールへリファクタリング
+
+前の章で述べた明示的なルールは同じ種類のファイルの処理に限られる。
+次のコードはメインテナンス不能なスクリプトへ誘うものであり、さらにビルドが遅い(forループ)：
+
+[source, python]
+----------------
+def build(bld):
+	for x in 'a.lua b.lua c.lua'.split():
+		y = x.replace('.lua', '.luac')
+		bld(source=x, target=y, rule='${LUAC} -s -o ${TGT} ${SRC}')
+		bld.install_files('${LUADIR}', x)
+----------------
+
+むしろ、ルールはユーザスリクプトから取り除かれるべきで、次のようなものだ:
+
+[source,python]
+---------------
+def build(bld):
+	bld(source='a.lua b.lua c.lua')
+---------------
+
+同等なロジックは次のコードで実現される。
+これは同じ 'wscript' もしくはWafツールに配置することができる:
+
+[source,python]
+---------------
+from waflib import TaskGen
+TaskGen.declare_chain(
+	name         = 'luac', <1>
+	rule         = '${LUAC} -s -o ${TGT} ${SRC}', <2>
+	shell        = False,
+	ext_in       = '.lua', <3>
+	ext_out      = '.luac', <4>
+	reentrant    = False, <5>
+	install_path = '${LUADIR}', <6>
+)
+---------------
+
+<1> 使用するタスククラスに対応する名前
+<2> ルールはルールベースのタスクジェネレータと同じ
+<3> 拡張子によって処理される入力ファイル
+<4> スペースで区切られた出力ファイルの拡張子。この場合は唯一の出力ファイル
+<5> reentrantアトリビュートは、他の暗黙なルールによる処理のために、出力ファイルを再度入力として追加するのに使われる
+<6> アウトプットファイルへのパスの文字列表現は、 'bld.install_files' からの目的の場所へのパスと似ている。インストールを無効にするならFalseに設定。
+
+==== 2つ以上のコマンドの連鎖
+
+ここでは長い連鎖を考える 'uh.in' → 'uh.a' → 'uh.b' → 'uh.c' 。
+次の暗黙のルールは最小限のユーザスクリプトのメンナンスでファイルを生成するデモを行う：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(source='uh.in')
+
+from waflib import TaskGen
+TaskGen.declare_chain(name='a', rule='cp ${SRC} ${TGT}', ext_in='.in', ext_out='.a',)
+TaskGen.declare_chain(name='b', rule='cp ${SRC} ${TGT}', ext_in='.a',  ext_out='.b',)
+TaskGen.declare_chain(name='c', rule='cp ${SRC} ${TGT}', ext_in='.b',  ext_out='.c', reentrant = False)
+---------------
+
+ビルドフェーズの間、拡張子に基づいて正しいコンパイル順序が計算される：
+
+[source,shishell]
+---------------
+$ waf distclean configure build
+'distclean' finished successfully (0.000s)
+'configure' finished successfully (0.090s)
+Waf: Entering directory `/comp/waf/demos/simple_scenarios/chaining/build'
+[1/3] a: uh.in -> build/uh.a
+[2/3] b: build/uh.a -> build/uh.b
+[3/3] c: build/uh.b -> build/uh.c
+Waf: Leaving directory `/comp/waf/demos/simple_scenarios/chaining/build'
+'build' finished successfully (0.034s)
+---------------
+
+==== スキャナメソッド
+
+変換の連鎖は暗黙の変換に基づいているため、いくつかのファイルをスクリプトから除くことが望ましい。
+もしくは、いくつかの依存関係は条件的に導入され、事前にはわからないかもしれない。
+'スキャナメソッド' は追加的な依存関係をターゲットが生成される直前に探すある種のコールバックだ。
+例示するために、3つのファイル 'wscript' 、 'ch.in' 、 'ch.dep' が含まれる空のプロジェクトから始めよう：
+
+[source,shishell]
+---------------
+$ cd /tmp/smallproject
+
+$ tree
+.
+|-- ch.dep
+|-- ch.in
+`-- wscript
+---------------
+
+ビルドは 'ch.out' と呼ばれる 'ch.in' のコピーを作る。
+また 'ch.out' は 'ch.dep' が変更されるたびにリビルドされなくてはならない。
+これは多かれ少なかれ次のMakefileに対応する：
+
+[source,make]
+-----------------
+ch.out: ch.in ch.dep
+	cp ch.in ch.out
+-----------------
+
+ユーザスクリプトは次のコードのみを含む：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(source = 'ch.in')
+---------------
+
+次のコードはユーザスクリプトからは独立で、Wafツールによって読み込まれる。
+
+[source,python]
+---------------
+def scan_meth(task): <1>
+	node = task.inputs[0]
+	dep = node.parent.find_resource(node.name.replace('.in', '.dep')) <2>
+	if not dep:
+		raise ValueError("Could not find the .dep file for %r" % node)
+	return ([dep], []) <3>
+
+from waflib import TaskGen
+TaskGen.declare_chain(
+	name      = 'copy',
+	rule      = 'cp ${SRC} ${TGT}',
+	ext_in    = '.in',
+	ext_out   = '.out',
+	reentrant = False,
+	scan      = scan_meth, <4>
+)
+--------------
+<1> スキャナメソッドはタスクオブジェクトを入力として受け付ける(タスクジェネレータではない)
+<2> 依存関係を見つけるためにノードメソッドを使用 (そして見つからなければエラーを挙げる)
+<3> スキャナメソッドは2つのリストを含むタプルを返す。最初のリストは依存するノードオブジェクトのリストを含む。2番目のリストはデバッグ情報などのプライベートなデータを含む。結果はビルドの呼出間でキャッシュされ、中身はシリアライズされる。
+<4> 宣言を連鎖するためにスキャナメソッドを追加
+
+実行のトレースは次のようになる：
+
+[source,shishell]
+--------------
+$ echo 1 > ch.in
+$ echo 1 > ch.dep <1>
+
+$ waf distclean configure build
+'distclean' finished successfully (0.001s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/smallproject/build'
+[1/1] copy: ch.in -> build/ch.out <2>
+Waf: Leaving directory `/tmp/smallproject/build'
+'build' finished successfully (0.010s)
+
+$ waf
+Waf: Entering directory `/tmp/smallproject/build'
+Waf: Leaving directory `/tmp/smallproject/build'
+'build' finished successfully (0.005s) <3>
+
+$ echo 2 > ch.dep <4>
+
+$ waf
+Waf: Entering directory `/tmp/smallproject/build'
+[1/1] copy: ch.in -> build/ch.out <5>
+Waf: Leaving directory `/tmp/smallproject/build'
+'build' finished successfully (0.012s)
+--------------
+
+<1> 'ch.in' と 'ch.dep' のファイルの中身を初期化
+<2> 最初のクリーンビルドを実行。ファイル 'ch.out' が生成される
+<3> 何も変更されていないので、ターゲット 'ch.out' は最新の状態
+<4> 'ch.dep' の中身を変更
+<5> 依存関係が変化したのでリビルド
+
+ここにスキャナメソッドのいくつかの重要なポイントを示す：
+
+. ターゲットが最新の状態でない場合に限り実行される
+. 'task' オブジェクトやコンフィギュレーションセット 'task.env' の中身を変更しない
+. 並列実行における問題を回避するため、メインのシングルスレッドでのみ実行される
+. スキャナの結果(2つのリストのタプル)はビルドの実行間で再利用される(プログラミングによりこれらの結果にアクセス可能)
+. Makeに似たルールは 'scan' 引数も受け付ける (スキャナメソッドはタスクジェネレータよりもむしろタスクにバインドされる)
+. C/C++サポートでは、ヘッダファイルの依存関係('.c' → '.h')を動的に追加するため、Wafによって内部的に使われる
+
+
+==== 拡張子コールバック
+
+前のセクションでの連鎖の宣言で、'reentrant' アトリビュートは生成されたファイルが処理されるべきかそうでないかを制御するためのものとして述べた。
+しかし、それ自身のなかではソースファイルとして考慮されてない(C/C++でのヘッダファイルのように)が、生成された2つのファイルのうちの1つが宣言されるべき場合もある(依存関係として使われるため). 
+ここで('uh.in' → 'uh.a1' + 'uh.a2')と('uh.a1' → 'uh.b')の2つの連鎖について次の例で考える：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	obj = bld(source='uh.in')
+
+from waflib import TaskGen
+TaskGen.declare_chain(
+	name      = 'a',
+	action    = 'cp ${SRC} ${TGT}',
+	ext_in    = '.in',
+	ext_out   = ['.a1', '.a2'],
+	reentrant = True,
+)
+
+TaskGen.declare_chain(
+	name      = 'b',
+	action    = 'cp ${SRC} ${TGT}',
+	ext_in    = '.a1',
+	ext_out   = '.b',
+	reentrant = False,
+)
+--------------
+
+次のエラーメッセージが生成される：
+
+[source,shishell]
+--------------
+$ waf distclean configure build
+'distclean' finished successfully (0.001s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/smallproject'
+Waf: Leaving directory `/tmp/smallproject'
+Cannot guess how to process bld:///tmp/smallproject/uh.a2 (got mappings ['.a1', '.in'] in
+   class TaskGen.task_gen) -> try conf.load(..)?
+--------------
+
+エラーメッセージは 'uh.a2' を処理する方法が存在しないことを示唆する。
+'.a1' か '.in' を拡張子にもつファイルのみが処理される。
+内部的に、拡張子の名前はコールバックメソッドにバインドされている。
+エラーはメソッドが見つからなかったために発生し、次はグローバルに拡張子コールバックを登録する方法だ：
+
+[source,python]
+---------------
+@TaskGen.extension('.a2')
+def foo(*k, **kw):
+	pass
+---------------
+
+拡張子コールバックをローカルに登録するためには、タスクジェネレータへの参照は保たれなくてはならない：
+
+[source,python]
+---------------
+def build(bld):
+	obj = bld(source='uh.in')
+	def callback(*k, **kw):
+		pass
+	obj.mappings['.a2'] = callback
+---------------
+
+拡張子コールバックの正確なメソッドシグネチャと典型的な用法は次のようになる：
+
+[source,python]
+---------------
+from waflib import TaskGen
+@TaskGen.extension(".a", ".b") <1>
+def my_callback(task_gen_object<2>, node<3>):
+	task_gen_object.create_task(
+		task_name, <4>
+		node,  <5>
+		output_nodes) <6>
+---------------
+
+<1> カンマ区切りの拡張子のリスト(strings)
+<2> データを保持するタスクジェネレータインスタンス
+<3> ファイルを表すノードインスタンス(ソースもしくはビルド)
+<4> タスクを生成するための最初の引数はタスククラスの名前
+<5> 2番目の引数は入力ノード(もしくは複数の入力に対するノードのリスト)
+<6> 最後のパラメータは出力ノード(もしくは複数の出力に対するノードのリスト)
+
+新しいタスククラスの生成については次のセクションで記述する。
+
+==== タスククラスの宣言
+
+WafタスクはTask.TaskBaseクラスのインスタンスだ。
+しかし、ベースクラスは実に最小限であるため、直接のサブクラスである 'Task.Task' が通常ユーザスクリプトで使われる。
+ここでは1つの 'wscript' プロジェクトファイルと 'ah.in' という名前のサンプルファイルのみを含む単純なプロジェクトから始める。
+タスククラスはあとで追加される。
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(source='uh.in')
+
+from waflib import Task, TaskGen
+
+@TaskGen.extension('.in')
+def process(self, node):
+	tsk = self.create_task('abcd') <1>
+	print(tsk.__class__)
+
+class abcd(Task.Task): <2>
+	def run(self): <3>
+		print('executing...')
+		return 0 <4>
+---------------
+
+<1> 'abcd' の新たなインスタンスの作成。メソッド 'create_task' はタスクがそのタスクジェネレータへのリファレンスを保つことを保証するためのショートカット
+<2> モジュールTask.pyのTaskクラスを継承
+<3> メソッドrunはタスクが実行されたときに呼ばれる
+<4> タスクのリターンステータスは整数でなくてはならず、ゼロは成功を意味する。失敗したタスクはその後に続くビルドで実行される
+
+ビルド実行の出力は次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build
+'distclean' finished successfully (0.002s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/simpleproject/build'
+<class 'wscript_main.abcd'>
+[1/1] abcd:
+executing...
+Waf: Leaving directory `/tmp/simpleproject/build'
+'build' finished successfully (0.005s)
+---------------
+
+plainなPythonでタスククラスを書き下すことができるが、2つの関数(ファクトリ)が簡略化のために提供されている、例えば：
+
+[source,python]
+---------------
+Task.simple_task_type( <1>
+	'xsubpp', <2>
+	rule    = '${PERL} ${XSUBPP} ${SRC} > ${TGT}', <3>
+	color   = 'BLUE', <4>
+	before  = 'cc') <5>
+
+def build_it(task):
+	return 0
+
+Task.task_type_from_func(<6>
+	'sometask', <7>
+	func    = build_it, <8>
+	vars    = ['SRT'],
+	color   = 'RED',
+	ext_in  = '.in',
+	ext_out = '.out') <9>
+---------------
+
+<1> ルール文字列を実行する新しいタスククラスを生成
+<2> タスククラスの名前
+<3> ビルド中に実行されるルール
+<4> 実行中の出力の色
+<5> 'cc' という名前のタスククラスのインスタンスに先立って実行。 'before' の反対は 'after'
+<6> カスタムのPython関数から新しいタスククラスの生成。'vars' アトリビュートは依存関係として使われる追加のコンフィギュレーションセットの値を表す
+<7> タスククラスの名前
+<8> 使用する関数
+<9> このコンテキストでは、他のタスククラスを明示的に名付けなくても、拡張子の名前は実行順序の計算に使われることを意味する
+
+
+殆どのアトリビュートは2つのファクトリ関数の間で共通であることに注意してほしい。
+他にも多くの使用例がWafツールの中で見つかるだろう。
+
+==== ソースアトリビュートの処理
+
+ソースファイルアトリビュートの処理での最初の処理はすべてのファイル名をノードに変換することだ。
+正確な(拡張子なしの)ファイル名のエントリによって、特別なメソッドがintercept namesにマッピングされる。
+ノードオブジェクトはタスクジェネレータの 'source' アトリビュートに追加される。
+
+ノードのリストは通常の拡張子のマッピングにより処理される。
+拡張メソッドはその後の処理のために、 'source' アトリビュートに追加することで、出力ノードを再度挿入する。
+(従って、リエントラントという名前はdeclare_chainで提供される)。
+
+image::source{PIC}["ソースアトリビュートの処理"{backend@docbook:,width=250:},align="center"]
+

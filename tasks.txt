@@ -1,0 +1,610 @@
+
+== タスク処理
+
+この章ではビルドフェーズで使われるタスククラスについて記述する。
+
+=== タスクの実行
+
+==== 主要なアクター
+
+ビルドコンテキストはタスクと、並行に実行することができるタスクのリストを返すためにのみ使われる。
+スケジューリングはタスク消費者に実行させるタスク生産者に移譲される。
+タスク生産者は処理されたタスクやエラーの数などのビルド状態を記録する。
+
+image::tasks_actors{PIC}["タスクを処理するアクター"{backend@docbook:,width=150:},align="center"]
+
+// To reduce the build time, it is interesting to take advantage of the hardware (multiple cpu cores) or of the environment (distributed builds).
+消費者の数はプロセッサの数、もしくは '-j' オプションにより手動で決定される。
+
+[source,shishell]
+------------------
+$ waf -j3
+------------------
+
+==== ビルドグループ
+
+タスク生産者はビルドコンテキストによって返されたタスクのリストをイテレートする。
+ひとつリスト中のタスクは消費者スレッドにより並列に実行されるが、あるリスト中のタスクは他のリスト中のタスクより前にすべて処理される。
+処理すべきタスクがなくなるとビルドは終了する。
+
+これらのタスクのリストは _ビルドグループ_ と呼ばれ、 ビルドスクリプトからアクセスできる。
+例を通してこの振舞いを見ていこう:
+
+// tasks_groups
+[source,python]
+---------------
+def build(ctx):
+    for i in range(8):
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript', target='wscript_a_%d' % i,
+            color='YELLOW', name='tasks a')
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript_a_%d' % i, target='wscript_b_%d' % i,
+            color='GREEN', name='tasks b')
+    for i in range(8)
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript', target='wscript_c_%d' % i,
+            color='BLUE', name='tasks c')
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript_c_%d' % i, target='wscript_d_%d' % i,
+            color='PINK', name='tasks d')
+---------------
+
+それぞれのグリーンのタスクは1つのイエローのタスクの後に実行されなくてはならない。
+そしてそれぞれのピンクのタスクは1つのブルーのタスクの後に実行されなくてはならない。
+デフォルトでは1つのグループしかないため、並列実行は次と似たものになるだろう：
+
+image::tasks_nogroup{PIC}["1つのビルドグループ"{backend@docbook:,width=440:},align="center"]
+
+ここでもうひとつビルドグループを追加するように例を変更しよう。
+
+[source,python]
+---------------
+def build(ctx):
+    for i in range(8):
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript', target='wscript_a_%d' % i,
+            color='YELLOW', name='tasks a')
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript_a_%d' % i, target='wscript_b_%d' % i,
+            color='GREEN', name='tasks b')
+    ctx.add_group()
+    for i in range(8):
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript', target='wscript_c_%d' % i,
+            color='BLUE', name='tasks c')
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript_c_%d' % i, target='wscript_d_%d' % i,
+            color='PINK', name='tasks d')
+---------------
+
+ここで、セパレータは黄色と緑色のタスクのグループと青色と紫色のタスクのグループとの間に表われる：
+
+image::tasks_twogroups{PIC}["2つのビルドグループ"{backend@docbook:,width=440:},align="center"]
+
+タスクとタスクジェネレータは暗黙的に現在のグループに追加される。
+グループに名前を与えることで何が何処へ行くのかを簡単に制御できる：
+
+// tasks_groups2
+[source,python]
+---------------
+def build(ctx):
+
+    ctx.add_group('group1')
+    ctx.add_group('group2')
+
+    for i in range(8):
+        ctx.set_group('group1')
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript', target='wscript_a_%d' % i,
+            color='YELLOW', name='tasks a')
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript_a_%d' % i, target='wscript_b_%d' % i,
+            color='GREEN', name='tasks b')
+
+        ctx.set_group('group2')
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript', target='wscript_c_%d' % i,
+            color='BLUE', name='tasks c')
+        ctx(rule='cp ${SRC} ${TGT}', source='wscript_c_%d' % i, target='wscript_d_%d' % i,
+            color='PINK', name='tasks d')
+---------------
+
+前の例では、すべてのビルドグループからなる、すべてのタスクジェネレータはビルドが実際に開始する前に処理される。
+このデフォルトの挙動は可能な限り正確にタスク数を数えるために提供されている。
+ここではビルドグループをチューンする方法を示す：
+
+[source,python]
+---------------
+def build(ctx):
+	from waflib.Build import POST_LAZY, POST_BOTH, POST_AT_ONCE
+	ctx.post_mode = POST_AT_ONCE <1>
+	#ctx.post_mode = POST_LAZY <2>
+	#ctx.post_mode = POST_BOTH <3>
+---------------
+
+<1> すべてのタスクジェネレータはビルドが開始される前にタスクを生成する(デフォルトの挙動)
+<2> グループは順番に処理される: 次のグループのタスクジェネレータが処理される前に前のグループのすべてのタスクは実行される
+<3> 前の2つの挙動の組合せ: 次のグループのタスクによって生成されるタスクジェネレータはタスクを生成することができる
+
+
+ビルドグループは<<build_compiler_first,ソースファイルの生成のためのコンパイラをビルド>>するために使うことができる。
+
+==== 生産者-消費者システム
+
+ほとんどのPythonインタープリタでは、グローバルインタープリタロックによって一度に1つ以上のCPUでの並列化が行われない。
+そのため、1つのタスクプロデューサ上でタスクのスケジューリングを制限することは理にかなっており、スレッドにタスクの実行のみをアクセスさせる。
+
+生産者と消費者間のコミュニケーションは _ready_ と _out_ の2つのキューに基づいている。
+生産者は _ready_ にタスクを追加し、結果を _out_ から読み込む。
+消費者は _ready_ からタスクを取得し、 'task.run' を実行後、結果を生産者に返すために _out_ に返す。
+
+生産者はタスクをイテレートしてキュー _ready_ にどのタスクを入れるかを決めるために _outstanding_ と名付けられたリストを内部で使う。
+処理することのできないタスクは、タスクが他のタスクを待つエンドレスループを避けるためにリスト _frozen_ に一時的に出力される。
+
+次の図ではビルド中にタスク生産者と消費者が演じる関係について示す。
+
+image::prodcons{PIC}["並列実行"{backend@docbook:,width=470:},align="center"]
+
+==== タスクの状態とステータス
+
+実行を追跡するために、それぞれのタスクに状態が割当てられている(_task.hasrun = state_)。
+可能な値は次のようになる：
+
+[options="header", cols="1,1,6"]
+|=================
+|状態    | 数値 | Description
+|NOT_RUN  | 0 | タスクは未処理
+|MISSING  | 1 | タスクの出力がない
+|CRASHED  | 2 | タスクメソッド 'run' が非ゼロを返した
+|EXCEPTION| 3 | タスクメソッド 'run' で例外が発生した
+|SKIPPED  | 8 | タスクはスキップされた(最新の状態だった)
+|SUCCESS  | 9 | 実行は成功した
+|=================
+
+タスクを実行するか否かを決定するために、生産者はタスクメソッド 'runnable_status' の戻値を使う。
+可能な戻値は次のようになる：
+
+[options="header", cols="1,6"]
+|=================
+|コード    | 説明
+| ASK_LATER | タスクが実行が終了していない他のタスクに依存している(not ready)
+| SKIP_ME   | タスクは実行される必要はない、最新
+| RUN_ME    | タスクは実行の準備完了
+|=================
+
+次の図は主要なタスクメソッドとタスクの状態およびステータス間の相互作用を表現した図だ：
+
+image::task_run{PIC}["タスクの状態"{backend@docbook:,width=310:},align="center"]
+
+=== ビルド順序制約
+
+==== set_run_afterメソッド
+
+メソッド _set_run_after_ はタスク間の順序制約を宣言するために使われる:
+
+[source,python]
+---------------
+task1.set_run_after(task2)
+---------------
+
+待機中のタスクは _run_after_ アトリビュートに格納される。
+これらのタスクは実行されていない場合にメソッド _runnable_status_ によって使われ、 'ASK_LATER' ステータスをyieldする。
+これは単にビルド順序および前のタスクのうちのひとつが実行された場合にリビルドを強制するためのものだ。
+
+==== 計算された制約
+
+===== after/beforeアトリビュート
+
+アトリビュート _before_ と _after_ はタスク間の順序制約を宣言するために使われる：
+
+[source,python]
+---------------
+from waflib.Task import TaskBase
+class task_test_a(TaskBase):
+    before = ['task_test_b']
+class task_test_b(TaskBase):
+    after  = ['task_test_a']
+---------------
+
+===== ext_in/ext_out
+
+順序を強制する他の方法はクラスアトリビュートで抽象的なシンボルのリストを宣言することだ。
+この方法ではクラスは明示的には名付けられない、例えば：
+
+[source,python]
+---------------
+from waflib.Task import TaskBase
+class task_test_a(TaskBase):
+    ext_in  = ['.h']
+class task_test_b(TaskBase):
+    ext_out = ['.h']
+---------------
+
+'拡張子' ext_inとext_outは、タスクがそのような拡張子のファイルを生成しなくてはならないことを意味するわけではなく、優先順序制約を使うための単なるシンボルだ。
+
+===== 順序抽出
+
+タスクを生産者-消費者システムに投入する前に、入力および出力を持つタスクに対して制約の抽出が行われる。
+アトリビュート _run_after_ は待つタスクで初期化される。
+
+タスクのリストに対して呼ばれる2つの関数は：
+
+. _waflib.Task.set_precedence_constraints_: タスククラスのアトリビュートext_in/ext_out/before/afterからビルド順序の抽出
+. _waflib.Task.set_file_constraints_: 入力および出力を持つタスクから制約の抽出
+
+==== 弱い順序制約
+
+多くの実行時間が必要となることがわかっているタスクを最初に実行することでビルド時間が改善される。
+制約付きの並列環境おいて最適な実行順序を見つける一般的な問題はhttp://en.wikipedia.org/wiki/Job-shop_problem[Job Shop]問題と呼ばれる。
+
+実際にはこの問題はクリティカルパスの問題に帰着できる(近似)。
+
+次の図では異なる独立のタスクでビルドする際のスケジューリングでの遅いタスクが特定され最初に起動される違いを示す：
+
+[source,python]
+---------------
+def build(ctx):
+    for x in range(5):
+        ctx(rule='sleep 1', color='GREEN', name='short task')
+    ctx(rule='sleep 5', color='RED', name='long task')
+---------------
+
+image::tasks_nosort{PIC}["特別な順序なし"{backend@docbook:,width=440:},align="center"]
+
+生産に渡される前にグループから再度タスクの順序を決めるために関数を使う。
+長いタスクを最初の位置に並べ換えるために関数を置き換える：
+
+// tasks_weak
+[source,python]
+---------------
+from waflib import Task
+old = Task.set_file_constraints
+def meth(lst):
+    lst.sort(cmp=lambda x, y: cmp(x.__class__.__name__, y.__class__.__name__)) <1>
+    old(lst) <2>
+Task.set_file_constraints = meth <3>
+---------------
+
+<1> 長いタスクを最初の位置に設定
+<2> オリジナルのコードを実行
+<3> メソッドを置き換える
+
+ここで影響を表現する：
+
+image::tasks_sort{PIC}["一番遅いタスクを最初に実行"{backend@docbook:,width=440:},align="center"]
+
+=== 依存関係
+
+==== タスクシグネチャ
+
+'waflib.Task.TaskBase' の直接のインスタンスは非常に限定されていてファイルの変更を追跡できない。
+サブクラスである 'waflib.Task.Task' は、ソースファイルがターゲットファイルの生成に使われる、最も一般的なビルドに必要な特徴を提供する。
+
+依存関係の追跡は *タスクシグネチャ* と呼ばれる依存関係のハッシュの使用に基づいて行われる。
+シグネチャは入力ファイルやコンフィギュレーションセットの値などのさまざまな依存するソースから計算される。
+
+次の図ではどのように 'waflib.Task.Task' インスタンスが処理されるかを示す：
+
+image::task_signature{PIC}["シグネチャ"{backend@docbook:,height=350:},align="center"]
+
+次のデータはシグネチャの計算に使われる：
+
+. 明示的な依存関係: _入力ノード_ と _bld.depends_on_ によって明示的に示された依存関係のセット
+. 暗黙の依存関係: スキャナメソッド(_scan_ メソッド)によって探索された依存関係
+. 値: コンパイルフラグなどのコンフィギュレーションセットの値
+
+==== 明示的な依存関係
+
+===== 入力および出力ノード
+
+タスクオブジェクトは他のタスクに直接依存はしない。
+他のタスクは存在するかしないか、そして実行されるかノードである。
+むしろ、入力および出力ノードは異なるソースに由来する、それ自身のシグネチャの値を保持する：
+
+. ビルドファイルのためのノードは通常ファイルを生成したタスクのシグネチャを継承する
+. 他のどこかからのノードはファイルの中身(ハッシュ)から計算されたシグネチャを持つ
+
+===== 他のノードに対するグローバルな依存関係
+
+いくつかのファイルは入力に存在しなくても他のファイルに推移的に依存する。
+これはビルドコンテキストの _add_manual_dependency_ メソッドによりなされる：
+
+// tasks_manual_deps
+[source,python]
+---------------
+def configure(ctx):
+    pass
+
+def build(ctx):
+    ctx(rule='cp ${SRC} ${TGT}', source='wscript', target='somecopy')
+    ctx.add_manual_dependency(
+        ctx.path.find_node('wscript'),
+        ctx.path.find_node('testfile'))
+---------------
+
+_somecopy_ ファイルは _wscript_ もしくは _testfile_ がたとえ一文字でも変更されるとリビルドされる。
+
+[source,shishell]
+---------------
+$ waf build
+Waf: Entering directory `/tmp/tasks_manual_deps/build'
+[1/1] somecopy: wscript -> build/somecopy
+Waf: Leaving directory `/tmp/tasks_manual_deps/build'
+'build' finished successfully (0.034s)
+
+$ waf
+Waf: Entering directory `/tmp/tasks_manual_deps/build'
+Waf: Leaving directory `/tmp/tasks_manual_deps/build'
+'build' finished successfully (0.006s)
+
+$ echo " " >> testfile
+
+$ waf
+Waf: Entering directory `/tmp/tasks_manual_deps/build'
+[1/1] somecopy: wscript -> build/somecopy
+Waf: Leaving directory `/tmp/tasks_manual_deps/build'
+'build' finished successfully (0.022s)
+---------------
+
+==== 暗黙の依存関係(スキャナメソッド)
+
+いくつかのタスクはビルド開始後に動的に生成することができ、依存関係を前もって知ることはできない。
+タスクサブクラスは _scan_ という名前のメソッドを提供することができ、暗黙に追加のノードを得る。
+次の例では、 _copy_ タスクはスキャナメソッドを提供し、入力ファイルと同階層で見つかるwscriptファイルに依存する。
+
+// tasks_scan
+[source,python]
+---------------
+import time
+from waflib.Task import Task
+class copy(Task):
+
+    def run(self):
+        return self.exec_command('cp %s %s' % (self.inputs[0].abspath(), self.outputs[0].abspath()))
+
+    def scan(self): <1>
+        print('→ calling the scanner method')
+        node = self.inputs[0].parent.find_resource('wscript')
+        return ([node], time.time()) <2>
+
+    def runnable_status(self):
+        ret = super(copy, self).runnable_status() <3>
+        bld = self.generator.bld <4>
+        print('nodes:       %r' % bld.node_deps[self.uid()]) <5>
+        print('custom data: %r' % bld.raw_deps[self.uid()]) <6>
+        return ret
+
+def configure(ctx):
+    pass
+
+def build(ctx):
+    tsk = copy(env=ctx.env) <7>
+    tsk.set_inputs(ctx.path.find_resource('a.in'))
+    tsk.set_outputs(ctx.path.find_or_declare('b.out'))
+    ctx.add_to_group(tsk)
+---------------
+
+<1> スキャナメソッド
+<2> 戻り値は依存するノードのリストとシリアライズ可能なカスタムデータのタプル
+<3> runnable_statusメソッドをオーバーライドしてロギングを追加
+<4> このタスクに関連付けられたビルドコンテキストへの参照を得る
+<5> スキャナメソッドによって返されるノードはマップ *bld.node_deps* に格納される
+<6> スキャナメソッドによって返されるカスタムデータマップ *bld.raw_deps* に格納される
+<7> タスクを手動で作成(タスクジェネレータによるカプセル化については次の章で述べる)
+
+[source,shishell]
+---------------
+$ waf
+→ calling the scanner method <1>
+nodes:  [/tmp/tasks_scan/wscript]
+custom data: 55.51
+[1/1] copy: a.in -> build/b.out
+'build' finished successfully (0.021s)
+
+$ waf <2>
+nodes:  [/tmp/tasks_scan/wscript]
+custom data: 1280561555.512006
+'build' finished successfully (0.005s)
+
+$ echo " " >> wscript <3>
+
+$ waf
+→ calling the scanner method
+nodes:  [/tmp/tasks_scan/wscript]
+custom data: 64.31
+[1/1] copy: a.in -> build/b.out
+'build' finished successfully (0.022s)
+---------------
+
+<1> スキャナメソッドはクリーンビルドで常に呼ばれる
+<2> 返されるデータが検索された場合でも、何も変更がないときにはスキャナメソッドは呼ばれない
+<3> 依存関係が変化すると、スキャナメソッドはもう一度実行される(カスタムデータが変化した)
+
+警告: ビルド順序が正しくない場合、メソッド _scan_ は依存するノードの発見に失敗する(ノードが見つからない)か、シグネチャの計算で例外を投げる(依存するノードのシグネチャが見つからない).
+
+==== 値
+
+コンパイルフラグのような慣習的なコマンドラインパラメータは _値に対する依存関係_ を生成し、より具体的にはコンギュレーションセットの値を生成する。
+タスククラスのアトリビュート 'vars' はシグネチャの計算にどの値が使われるかを制御するために使われる。
+次の例では、作成されたタスクは出力も入力も持たないノードを持ち、値にのみ依存する。
+
+// tasks_values
+[source,python]
+---------------
+from waflib.Task import Task
+class foo(Task): <1>
+	vars = ['FLAGS'] <2>
+	def run(self):
+		print('the flags are %r' % self.env.FLAGS) <3>
+
+def options(ctx):
+	ctx.add_option('--flags', default='-f', dest='flags', type='string')
+
+def build(ctx):
+	ctx.env.FLAGS = ctx.options.flags <4>
+	tsk = foo(env=ctx.env)
+	ctx.add_to_group(tsk)
+
+def configure(ctx):
+	pass
+---------------
+
+<1> _foo_ という名前のタスククラスを作成
+<2> 'self.env.FLAGS' が変更されるといつでもタスクインスタンスは実行される
+<3> デバッグのために値をプリント
+<4> コマンドラインから値を読む
+
+実行によって次の出力が生成される：
+
+[source,shishell]
+---------------
+$ waf --flags abcdef
+[1/1] foo:
+the flags are 'abcdef' <1>
+'build' finished successfully (0.006s)
+
+$ waf --flags abcdef <2>
+'build' finished successfully (0.004s)
+
+$ waf --flags abc
+[1/1] foo: <3>
+the flags are 'abc'
+'build' finished successfully (0.006s)
+---------------
+
+<1> このタスクは最初の実行で実行される
+<2> 依存関係が変化しないため、タスクは実行されない
+<3> フラグが変更されたため、タスクは実行される
+
+=== タスクのチューニング
+
+==== クラスアクセス
+
+タスクが次の例のように _run_str_ という名前のアトリビュートを提供するとき:
+
+// tasks_values2
+[source,python]
+---------------
+def configure(ctx):
+	ctx.env.COPY      = '/bin/cp'
+	ctx.env.COPYFLAGS = ['-f']
+
+def build(ctx):
+	from waflib.Task import Task
+	class copy(Task):
+		run_str = '${COPY} ${COPYFLAGS} ${SRC} ${TGT}'
+	print(copy.vars)
+
+	tsk = copy(env=ctx.env)
+	tsk.set_inputs(ctx.path.find_resource('wscript'))
+	tsk.set_outputs(ctx.path.find_or_declare('b.out'))
+	ctx.add_to_group(tsk)
+---------------
+
+'run_str' はコマンドラインを表し、 'COPYFLAGS' のような _$\{}_ の中の変数は依存関係に追加される変数を表すことが想定されている。
+メタクラスは 'run_str' を処理し、 'run' メソッド(タスクを実行するために呼ばれる)と 'vars' アトリビュート(存在する変数とマージされた)中の変数を獲得する。
+作成された関数は次の出力で表示される：
+
+[source,shishell]
+---------------
+$ waf --zones=action
+13:36:49 action   def f(tsk):
+	env = tsk.env
+	gen = tsk.generator
+	bld = gen.bld
+	wd = getattr(tsk, 'cwd', None)
+	def to_list(xx):
+		if isinstance(xx, str): return [xx]
+		return xx
+	lst = []
+	lst.extend(to_list(env['COPY']))
+	lst.extend(to_list(env['COPYFLAGS']))
+	lst.extend([a.path_from(bld.bldnode) for a in tsk.inputs])
+	lst.extend([a.path_from(bld.bldnode) for a in tsk.outputs])
+	lst = [x for x in lst if x]
+	return tsk.exec_command(lst, cwd=wd, env=env.env or None)
+[1/1] copy: wscript -> build/b.out
+['COPY', 'COPYFLAGS']
+'build' finished successfully (0.007s)
+---------------
+
+'waflib.Task.TaskBase' のすべてのサブクラスはモジュールアトリビュート 'waflib.Task.classes' に格納される。
+そのため、 'copy' タスクは次のようにアクセスできる：
+
+[source,python]
+---------------
+from waflib import Task
+cls = Task.classes['copy']
+---------------
+
+==== スクリプトレット拡張
+
+'run_str' はコンフィギュレーションセットの変数を使うが、利便性のためにいくつかの特別なケースが提供されている：
+
+. 値が *env*, *gen*, *bld* もしくは *tsk* で始まる場合、メソッド呼出しは作られる
+. 値がSRC[n]もしくはTGT[n]で始まる場合、入力/出力ノード _n_ のためのメソッド呼出しは作られる
+. SRCはビルドディレクトリのルートから見たタスクの入力のリストを表す
+. TGTはビルドディレクトリのルートから見たタスクの出力のリストを表す
+
+ここにいくつかの例を示す：
+
+[source,python]
+---------------
+${SRC[0].parent.abspath()} <1>
+${bld.root.abspath()} <2>
+${tsk.uid()} <3>
+${CPPPATH_ST:INCPATHS} <4>
+---------------
+
+<1> タスクの最初のソースファイルの親フォルダへの絶対パス
+<2> ファイルシステムのルート
+<3> タスクのユニークな識別子を表示 
+<4> _[env.CPPPATH_ST % x for x in env.INCPATHS]_ と同等なmapの置換を実行
+
+==== 直接のクラス変更
+
+===== 常に実行
+
+関数 'waflib.Task.always_run' はビルドが実行されたときにあるタスクを常に強制的に実行するために使われる。
+この関数はメソッド 'runnable_status' が常に _RUN_ME_ を返すように設定する。
+
+// task_always
+[source,python]
+---------------
+def configure(ctx):
+    pass
+
+def build(ctx):
+    from waflib import Task
+    class copy(Task.Task):
+        run_str = 'cp ${SRC} ${TGT}'
+    copy = waflib.Task.always_run(copy)
+
+    tsk = copy(env=ctx.env)
+    tsk.set_inputs(ctx.path.find_resource('wscript'))
+    tsk.set_outputs(ctx.path.find_or_declare('b.out'))
+    ctx.add_to_group(tsk)
+---------------
+
+利便性のため、ルールベースのタスクジェネレータは同じ結果を得るのに *always* アトリビュートを宣言できる：
+
+[source,python]
+---------------
+def build(ctx):
+    ctx(
+        rule   = 'echo hello',
+        always = True
+    )
+---------------
+
+===== ファイルハッシュ
+
+出力が本当にタスクから生成されたかを検知するために、タスクのシグネチャはタスクノードの出力のシグネチャとして使われる。
+その結果、ソースディレクトリで作られたファイルは毎回リビルドされる。
+これを避けるためにノードのシグネチャは実際のファイルの中身に一致する。
+これはタスクラスの 'waflib.Task.update_outputs' 関数を使うことで強制される。
+この関数は出力ノードにハッシュファイルの中身を設定するために、タスククラスの _post_run_ と _runnable_status_ メソッドを置き換える。
+
+利便性のために、ルールベースのタスクジェネレータは *update_outputs* アトリビュートを宣言することがで同じ結果を得ることができる。
+
+[source,python]
+---------------
+def build(ctx):
+    ctx(
+        rule           = 'cp ${SRC} ${TGT}',
+        source         = 'wcript',
+        target         = ctx.path.make_node('wscript2'),
+        update_outputs = True
+    )
+---------------
+

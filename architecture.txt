@@ -1,0 +1,361 @@
+
+== Wafアーキテクチャ概要
+
+この章では、Wafライブラリとコンポーネント間のインタラクションについて記述する。
+
+=== モジュールとクラス
+
+==== コアとなるモジュール
+
+Wafはコアライブラリを構成する次のモジュールにより構成される。
+これらのモジュールは `waflib/` ディレクトリに置かれている。
+`waflib/Tools` と `waflib/extras` に配置されているモジュールはWafのコアモジュールには含まれない拡張モジュールだ。
+
+.コアモジュールのリスト
+[options="header", cols="1,6"]
+|=================
+|モジュール   | 役割
+|Build     | ひとつのビルドに対するデータ(パス、コンフィギュレーションデータ)を保持するビルドコンテキストクラス(build, clean, install, uninstall)の定義 
+|Configure | コンフィギュレーションコンテキストクラスを含む。言語のコンフィギュレーションテストおよびビルド用のコンフィギュレーションセッティングの記述のために使われる
+|ConfigSet | 軽量のコピースキームをサポートし、永続サービスを提供するディクショナリクラスを提供する
+|Context   | すべてのWafコマンドのベースクラスを含む (Wafコマンドのコンテキストパラメータ)
+|Errors    | Wafのコードで使われる例外
+|Logs      | Pythonのloggingモジュールの呼出をラップするロギングシステム
+|Node      | ファイルシステムを表現するクラスを含む
+|Options   | optparseを元にした、カスタムのコマンドラインを処理するシステムを提供する
+|Runner    | タスク実行システムを含む (スレッドベースのプロデューサ-コンシューマ)
+|Scripting | Wafのエントリポイント、ビルドなどのユーザコマンドの実行、コンフィギュレーション、インストールを構成する
+|TaskGen   | タスクジェネレータシステムとメソッドの追加に基づくその実行システムを提供する
+|Task      | タスククラスの定義と新たなタスククラスを作るためのファクトリ関数を含む
+|Utils     | 他のWafモジュールから使われる補助関数およびクラスを含む
+|=================
+
+Wafをライブラリとして使うためにすべてのコアモジュールが必要というわけではない。
+モジュール間の依存関係は次のダイアグラムにより表現される。
+例えば、 'Node' モジュールは 'Utils' と 'Errors' モジュールを必要とする。
+逆に、 'Build' モジュールが単独で使われるならば 、 'Scripting' と 'Configure' モジュールは安全に取り除くことができる。
+
+image::core{PIC}["モジュールの依存関係"{backend@docbook:,height=400:},align="center"]
+
+==== コンテキストクラス
+
+'configure' や 'build' などのユーザコマンドは 'waflib.Context.Context' から派生したクラスとして表現される。
+関連付けられたクラスがないコマンドの場合、 'waflib.Context.Context' が替わりに使われる。
+
+'execute' メソッドはコンテキスト実行のスタートポイントで、ユーザのスクリプトを読込み、 'fun' クラスアトリビュートで参照される関数の実行を開始する 'recurse' メソッドを度々呼び出す。
+
+コマンドは 'cmd' クラスアトリビュートによってコンテキストクラスに関連付けられる。
+コンテキストサブクラスは 'store_context' メタクラスによって 'waflib.Context.classes' に追加され、 'waflib.Context.create_context' を通してロードされる。
+最後に定義されたクラスによって既存のコマンドを上書きされる。
+
+例のように、次のコンテキストクラスは 'configure' コマンドを定義または上書きする。
+'waf configure' を呼び出す場合、wscriptから 'foo' 関数が呼び出される：
+
+[source,python]
+---------------
+from waflib.Context import Context
+class somename(Context):
+    cmd = 'configure'
+    fun = 'foo'
+---------------
+
+image::classes{PIC}["コンテキストクラス"{backend@docbook:,width=500:},align="center"]
+
+==== ビルドクラス
+
+クラス 'waflib.Build.BuildContext' と 'waflib.Build.InstallContext' や 'waflib.Build.StepContext' のような、そのサブクラスはユーザスクリプトを読んだときに作られるタスクジェネレータをもつ。
+タスクジェネレータは通常タスクインスタンスをもち、すべてのタスクジェネレータ処理後に実行されるオペレーションに依存する。
+
+'ConfigSet' インスタンスはタスク('waflib.ConfigSet.ConfigSet.derive')に対するビルドコンテキストからコピーされ、コンフィギュレーションフラグのような値が伝搬する。
+コピーオンライトはそのクラスのほとんどのメソッド(append_value, prepend_value, append_unique)を通じて実行される。
+
+'Parallel' オブジェクトはビルドコンテキストのすべてのタスクに対するイテレーションをカプセル化し、スレッドオブジェクトに実行を移譲する(producer-consumer)。
+
+全体の構造は次のダイアグラムに表現される：
+
+image::classes_build{PIC}["ビルドクラス"{backend@docbook:,width=500:},align="center"]
+
+=== コンテキストオブジェクト
+
+==== コンテキストコマンドと再帰
+
+コンテキストコマンドは可能な限り独立なものとして設計されており、並列に実行することができる。
+主な適用例はコンフィギュレーションテストの一部として小さなビルドを実行することである。
+例えば、メソッド 'waflib.Tools.c_config.run_c_code' はテストを実行するためにプライベートなビルドコンテキストを内部的に作成する。
+これは単純なコンフィギュレーションコンテキストの作成と実行を並列に行うビルドの例だ：
+
+// architecture_link
+[source,python]
+---------------
+import os
+from waflib.Configure import conf, ConfigurationContext
+from waflib import Task, Build, Logs
+
+def options(ctx):
+	ctx.load('compiler_c')
+
+def configure(ctx):
+	ctx.load('compiler_c')
+
+def build(ctx):
+	ctx(rule=run_test, always=True, header_name='stdio.h') <1>
+	ctx(rule=run_test, always=True, header_name='unistd.h')
+
+def run_test(self):
+	top = self.generator.bld.srcnode.abspath()
+	out = self.generator.bld.bldnode.abspath()
+
+	ctx = ConfigurationContext(top_dir=top, out_dir=out) <2>
+	ctx.init_dirs() <3>
+
+	ctx.in_msg = 1 <4>
+	ctx.msg('test') <5>
+
+	header = self.generator.header_name
+	logfile = self.generator.path.get_bld().abspath() + os.sep \
+		+ header + '.log'
+	ctx.logger = Logs.make_logger(logfile, header) <6>
+
+	ctx.env = self.env.derive() <7>
+	ctx.check(header_name=header) <8>
+---------------
+
+<1> 下で定義された 'run_test' メソッドを実行するタスクジェネレータの作成
+<2> 'Task.run' の呼出しの一部である新たなコンフィギュレーションコンテキストの作成
+<3> ctx.srcnodeとctx.bldnodeの初期化 (ビルドコンテキストとコンフィギュレーションコンテキストのみ)
+<4> メソッド 'msg' 、 'start_msg' 、 'end_msg' への内部カウンタを設定
+<5> コンソール出力を無効化(カウンター値が非ゼロでネストされたメッセージの無効化)
+<6> それぞれのコンテキストはエラーメッセージに対してリダイレクトするロガーをもつことができる。
+<7> コピーされたタスクに対するデフォルト環境の初期化
+<8> コンフィギュレーションチェックの実行
+
+'waf build' の実行後、プロジェクトフォルダは新しいログファイルができる：
+
+[source,shishell]
+---------------
+$ tree
+.
+|-- build
+|   |-- c4che
+|   |   |-- build.config.py
+|   |   `-- _cache.py
+|   |-- config.log
+|   |-- stdio.h.log
+|   `-- unistd.h.log
+`-- wscript
+---------------
+
+コンテキストが並列に実行されることを保証するために、いくつかのmeasuresが設定されている：
+
+. コンテキストオブジェクトは 'waflib.Logs' モジュールから派生した異なるロガーを使うことができる。
+. それぞれのコンテキストオブジェクトは 'waflib.Node.Node' のプライベートなサブクラスに関連付けられており、ノードオブジェクトがユニークであることが保証される。 ノードオブジェクトをピックル化するために、ロックオブジェクト 'waflib.Node.pickle_lock' によって並行アクセスを避けることが重要である。
+
+==== ビルドコンテキストと永続性
+
+ビルドコンテキストはビルドに必要なすべての情報を保持する。
+起動を高速化するために、一部の情報は起動の合間で保存され読み込まれる。
+永続化されるアトリビュートを次に示す：
+
+.Persistent attributes
+[options="header", cols="1,3,3"]
+|=================
+|アトリビュート       | Description                    | タイプ
+|root      | ファイルシステムのルートを表現するノード   | ノード
+|node_deps | 暗黙の依存性                     | ノードとシグネチャを結びつけるdict
+|raw_deps  | 解決できない暗黙のファイル依存性       | ノードIDとシリアライズの型を結びつけるdict
+|task_sigs | 実行されるタスクのシグネチャ           | タスクの計算されたuidとハッシュを結びつけるdict
+|=================
+
+
+=== c-likeな言語のサポート
+
+==== コンパイルタスクとリンクタスク
+
+_waflib.Tools.ccroot_ はオブジェクトファイルを生成し、それらをひとつの最終的なファイルにリンクするシステムを提供する。
+メソッド _waflib.Tools.ccroot.apply_link_ はメソッド _waflib.TaskGen.process_source_ の後に呼び出されリンクタスクを生成する。
+疑似コード:
+
+[source,shishell]
+---------------
+call the method process_source:
+  for each source file foo.ext:
+    process the file by extension
+      if the method create_compiled_task is used:
+        create a new task
+        set the output file name to be foo.ext.o
+        add the task to the list self.compiled_tasks
+
+call the method apply_link
+  for each name N in self.features:
+    find a class named N:
+      if the class N derives from 'waflib.Tools.ccroot.link_task':
+        create a task of that class, assign it to self.link_task
+        set the link_task inputs from self.compiled_tasks
+        set the link_task output name to be env.N_PATTERN % self.target
+        stop
+---------------
+
+このシステムは _assembly_, _C_, _C++_, _D_ と _fortran_ にデフォルトで使われる。
+ちなみにメソッド _apply_link_ はメソッド _process_source_ の後で呼ばれることが想定されている。
+
+ここで、ミニ言語のサポートの仕方を示そう：
+
+[source,shishell]
+---------------
+cp: .ext -> .o
+cat: *.o -> .exe
+---------------
+
+これがプロジェクトファイルだ：
+
+// architecture_link
+[source,python]
+---------------
+def configure(ctx):
+	pass
+
+def build(ctx):
+	ctx(features='mylink', source='foo.ext faa.ext', target='bingo')
+
+from waflib.Task import Task
+from waflib.TaskGen import feature, extension, after_method
+from waflib.Tools import ccroot <1>
+
+@after_method('process_source')
+@feature('mylink')
+def call_apply_link(self): <2>
+	self.apply_link()
+
+class mylink(ccroot.link_task): <3>
+	run_str = 'cat ${SRC} > ${TGT}'
+
+class ext2o(Task):
+	run_str = 'cp ${SRC} ${TGT}'
+
+@extension('.ext')
+def process_ext(self, node):
+	self.create_compiled_task('ext2o', node) <4>
+---------------
+
+<1> このインポートは _create_compiled_task_ や _apply_link_task_ のようなメソッドをバインドする
+<2> 代替の定義は _waflib.TaskGen.feats[`mylink'] = [`apply_link']_ を呼ぶ
+<3> リンクタスクは他のリンクタスククラスのサブクラスでなくてはならない
+<4> _create_compiled_task_ メソッドの呼出し
+
+実行結果は次のようになる：
+// why the extra space after "setting top to"?
+[source,shishell]
+---------------
+$ waf distclean configure build -v
+'distclean' finished successfully (0.005s)
+Setting top to   : /tmp/architecture_link
+Setting out to   : /tmp/architecture_link/build
+'configure' finished successfully (0.008s)
+Waf: Entering directory `/tmp/architecture_link/build'
+[1/3] ext2o: foo.ext -> build/foo.ext.0.o
+12:50:25 runner ['cp', '../foo.ext', 'foo.ext.0.o']
+[2/3] ext2o: faa.ext -> build/faa.ext.0.o
+12:50:25 runner ['cp', '../faa.ext', 'faa.ext.0.o']
+[3/3] mylink: build/foo.ext.0.o build/faa.ext.0.o -> build/bingo
+12:50:25 runner 'cat foo.ext.0.o faa.ext.0.o > bingo'
+Waf: Leaving directory `/tmp/architecture_link/build'
+'build' finished successfully (0.041s)
+---------------
+
+備考： タスクジェネレータのインスタンスは最大1つのリンクタスクのインスタンスを持つ
+
+
+
+
+=== 再利用可能なwafツールを書く
+
+==== Wafツールの追加
+
+===== コードのインポート
+
+Wafツールの目的は、すべての概念的に関連したメソッドとクラスを分離されたファイルに移動し、Wafのコアから隠蔽し、可能な限り互いを独立させることで高い凝縮度をすすめることだ。
+
+カスタムのWafツールはプオジェクトに残すことができ、'waflib/extras' フォルダもしくは 'sys.path' の変更によってカスタムのWafファイルに追加することができる。
+
+ツールは 'import' キーワードによって直接他のツールをインポートすることができる。
+しかしながら、カップリングを制限するために常に 'ctx.load' にツールをインポートするべきである。
+例を比較：
+
+[source,python]
+---------------
+def configure(ctx):
+    from waflib.extras.foo import method1
+    method1(ctx)
+---------------
+
+そして:
+
+[source,python]
+---------------
+def configure(ctx):
+    ctx.load('foo')
+    ctx.method1()
+---------------
+
+'method1' がモジュール 'foo' からきたのか否か、モジュール 'foo' が存在する場所、それぞれに関しての想定が少ないため、2番目のバージョンの方が望ましい。
+
+===== C/C++/Fortranの命名の慣習
+
+ツール 'compiler_c' や 'compiler_cxx' 、 'compiler_fc' は特定のコンパイラの検出のために他のWafツールを使う。
+ユーザスクリプトで新しいツールにそれ自身を自動的に登録しインポートを保存する機会を与えるために、特定の命名の慣習を提供する。
+名前が 'c_' や 'cxx_' もしくは 'fc_' ではじまるツールがテストされる。
+
+レジストレーションコードは次のようなものになるだろう：
+
+[source,python]
+---------------
+from waflib.Tools.compiler_X import X_compiler
+X_compiler['platform'].append('module_name')
+---------------
+
+ここで *X* はコンパイラのタイプ('c', 'cxx' や 'fc')を表し, *platform* は判定が行われるプラットフォーム(linux, win32, など)を表し、*module_name* はツールの名前を表す。
+
+==== コマンドメソッド
+
+===== サブクラス化はコマンドのためだけ
+
+一般的なルールとして、 'waflib.Context.Context' のサブクラスは新しいコマンドが必要なときにのみ作られる。
+これは特定のvariant(アウトプットフォルダ)向けのコマンドが必要な場合や、新たな振舞いを提供する例でのケースだ。
+このことが起きる場合、クラスメソッド 'recurse' 、 'execute' やクラスアトリビュート 'cmd' 、 'fun' は通常上書きされる。
+
+備考： もし新しいコマンドが必要ないならばサブクラス化は使わなくてよい
+
+===== エンドユーザへの利便性のためのドメイン固有のメソッド
+
+Wafフレームワークはタスクジェネレータを宣言する最大限柔軟な方法を推進するが、巨大なプロジェクトではドメイン固有のラッパーを宣言することがしばしばより便利なことがある。
+例えば、sambaプロジェクトでは次のように使われる関数を提供する:
+
+[source,python]
+---------------
+bld.SAMBA_SUBSYSTEM('NDR_NBT_BUF',
+    source    = 'nbtname.c',
+    deps      = 'talloc',
+    autoproto = 'nbtname.h'
+    )
+---------------
+
+===== 新しいメソッドへのバインド方法
+
+新しいメソッドは '@conf' デコレータを使って、ビルドコンテキストもしくはコンフィギュレーションコンテキストに共通にバインドされる:
+
+[source,python]
+---------------
+from waflib.Configure import conf
+
+@conf
+def enterprise_program(self, *k, **kw):
+    kw['features'] = 'c cprogram debug_tasks'
+    return self(*k, **kw)
+
+def build(bld):
+    # no feature line
+    bld.enterprise_program(source='main.c', target='app')
+---------------
+
+サブクラス化では異なる目的のために書かれたツール間での衝突が起り得るため、メソッドは常にこのような方法か手動でバインドするべきだ。
+

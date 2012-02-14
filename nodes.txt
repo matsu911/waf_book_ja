@@ -1,0 +1,344 @@
+== ノードオブジェクト
+
+ノードオブジェクトはファイルやフォルダを表し、ファイルシステムの操作を簡単にする。
+この章では使用方法の概観を示す。
+
+=== ノードクラスのデザイン
+
+==== ノードツリー
+
+Wafのノードは _waflib.Node.Node_ クラスを継承しファイルシステムを表現するツリー構造を提供する：
+
+. *parent*: 親ノード
+. *children*: フォルダの中身 - ノードがファイルならば空
+
+実際には、ファイルシステムツリーへのリファレンスは、Wafコマンドからのアクセスのためにコンテキストクラスにバインドされている。
+ここで例示する：
+
+// nodes_tree
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+    pass
+
+def dosomething(ctx):
+    print(ctx.path.abspath()) <1>
+    print(ctx.root.abspath()) <2>
+    print("ctx.path contents %r" % ctx.path.children)
+    print("ctx.path parent   %r" % ctx.path.parent.abspath())
+    print("ctx.root parent   %r" % ctx.root.parent)
+---------------
+
+<1> *ctx.path* は実行される +wscript+ ファイルへのパスを表す
+<2> *ctx.root* はファイルシステムもしくはドライブレターを含むフォルダ(win32システム)のルート
+
+実行結果の出力は次のようになる：
+
+[source,shishell]
+---------------
+$ waf configure dosomething
+Setting top to    : /tmp/node_tree
+Setting out to    : /tmp/node_tree/build
+'configure' finished successfully (0.007s)
+/tmp/node_tree <1>
+/
+ctx.path contents {'wscript': /tmp/node_tree/wscript} <2>
+ctx.path parent   '/tmp' <3>
+ctx.root parent   None <4>
+'dosomething' finished successfully (0.001s)
+---------------
+
+<1> しばしば絶対パスが使われる
+<2> フォルダの中身は名前をノードオブジェクトに結びつけるdict _children_ に保存される
+<3> それぞれのノードはその _parent_ ノードへの参照を保持する
+<4> ルートノードは _parent_ をもたない
+
+備考: ノードとファイルシステムの要素には厳格な対応関係がある： 1つのノードは正確に1つのファイルか1つのフォルダを表し、1つのノードのみがあるファイルやフォルダを表現できる
+
+==== ノードキャッシング
+
+デフォルトでは必要なノードのみが作られる：
+
+// nodes_cache
+[source,python]
+---------------
+def configure(ctx):
+    pass
+
+def dosomething(ctx):
+    print(ctx.root.children)
+---------------
+
+ファイルシステムのルートはひとつのノードのみをもつが、現実のファイルシステムのルートは +/tmp+ だけではなくそれ以外のフォルダを含む:
+
+[source,shishell]
+---------------
+$ waf configure dosomething
+Setting top to   : /tmp/nodes_cache
+Setting out to   : /tmp/nodes_cache/build
+'configure' finished successfully (0.086s)
+{'tmp': /tmp}
+'dosomething' finished successfully (0.001s)
+
+$ ls /
+bin boot dev etc home tmp usr var
+---------------
+
+これは特にいくつかのノードは使われる前にファイルシステムから読み込まれるか作成されなくてはならないことを意味する。
+
+// ==== nodes and signatures TODO
+
+
+=== 一般的な用途
+
+==== ノードの探索と作成
+
+ノードは手動もしくはファイルシステムから読み込まれることで作られる。
+この目的のために3つのメソッドが用意されている：
+
+// nodes_search
+[source,python]
+---------------
+def configure(ctx):
+	pass
+
+def dosomething(ctx):
+	print(ctx.path.find_node('wscript')) <1>
+
+	nd1 = ctx.path.make_node('foo.txt') <2>
+	print(nd1)
+
+	nd2 = ctx.path.search('foo.txt') <3>
+	print(nd2)
+
+	nd3 = ctx.path.search('bar.txt') <4>
+	print(nd3)
+
+	nd2.write('some text') <5>
+	print(nd2.read())
+
+	print(ctx.path.listdir())
+---------------
+
+<1> ファイルシステムを読み込むことでノードを探索
+<2> ノードを探索し、存在しなければ作成する
+<3> ノードを探索するが、作成はしない
+<4> 存在しないファイルの探索
+<5> ノードで指し示されるファイルへ書き出し、作成もしくは上書きする
+
+出力結果は次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure dosomething
+'distclean' finished successfully (0.005s)
+Setting top to    : /tmp/nodes_search
+Setting out to    : /tmp/nodes_search/build
+'configure' finished successfully (0.006s)
+wscript
+foo.txt
+foo.txt
+None
+some text
+['.lock-wafbuild', 'foo.txt', 'build', 'wscript', '.git']
+---------------
+
+備考: http://docs.waf.googlecode.com/git/apidocs_16/index.html[APIドキュメンテーション] でさらに多くのメソッドを見つけることができる
+
+警告: これらのメソッドは並行アクセスに対して安全ではない。ノードクラスメソッドはスレッドセーフではない。
+
+==== ファイルとフォルダの列挙
+
+メソッド *ant_glob* はファイルや再帰的なフォルダの列挙に使われる；
+
+// nodes_ant_glob
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	pass
+
+def dosomething(ctx):
+	print(ctx.path.ant_glob('wsc*')) <1>
+	print(ctx.path.ant_glob('w?cr?p?')) <2>
+	print(ctx.root.ant_glob('usr/include/**/zlib*', <3> dir=False, src=True)) <4>
+	print(ctx.path.ant_glob(['**/*py', '**/*p'], excl=['**/default*'])) <5>
+---------------
+
+<1> メソッド ant_glob はビルドコンテキストではなく、ノードオブジェクトに対して呼ばれ、デフォルトではファイルのみを返す
+<2> '*' や '?' のようなワイルドカードを含むパターンだが、http://ant.apache.org/manual/dirtasks.html[Antパターン]で、正規表現ではない
+<3> シンボル '**' は再帰を有効にする。複雑なフォルダ階層には多くの時間がかかるため、使用には注意が必要だ
+<4> 再帰が有効になったとしても、デフォルトではファイルのみが返る。フォルダを返すためには、'dir=True'を使う
+<5> パターンは文字列のリストかスペース区切の値だ。除外するパターンは 'waflib.Node.exclude_regs' で定義される。
+
+実行結果の出力は次のようになる：
+
+[source,shishell]
+---------------
+$ waf configure dosomething
+Setting top to    : /tmp/nodes_ant_glob
+Setting out to    : /tmp/nodes_ant_glob/build
+'configure' finished successfully (0.006s)
+[/tmp/nodes_ant_glob/wscript]
+[/tmp/nodes_ant_glob/wscript]
+[/usr/include/zlib.h]
+[/tmp/nodes_ant_glob/build/c4che/build.config.py]
+---------------
+
+'..' は正確に2つのドット文字を表し、親ディレクトリではない。
+これは探索が終了することを保証し、同じファイルが何度も列挙されることはない。
+次を考慮：
+
+[source,python]
+---------------
+ctx.path.ant_glob('../wscript') <1>
+ctx.path.parent.ant_glob('wscript') <2>
+---------------
+
+<1> 無効、このパターンは何も返さない
+<2> 親ディレクトリから 'ant_glob' の呼出し
+
+==== パスの操作: abspath, path_from
+
+メソッド 'abspath' はノードの絶対パスを取得するために使われる。
+次の例では3つのノードが使われる：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(ctx):
+	dir = ctx.path <1>
+	src = ctx.path.find_resource('wscript')
+	bld = ctx.path.find_or_declare('out.out')
+
+	print(src.abspath(ctx.env)) <2>
+	print(bld.abspath(ctx.env))
+	print(dir.abspath(ctx.env)) <3>
+	print(dir.abspath())
+---------------
+
+<1> ディレクトリノード、ソースノード、そしてビルドノード
+<2> パラメータにコンフィギュレーションセットをとり、ソースノードやビルドノードの絶対パスを計算
+<3> ディレクトリの絶対パスの計算にはコンフィギュレーションセットを使うこともできる
+
+これは実行のトレースだ：
+
+[source,shishell]
+---------------
+$ waf distclean configure build
+'distclean' finished successfully (0.002s)
+'configure' finished successfully (0.005s)
+Waf: Entering directory `/tmp/nested/build'
+/tmp/nested/wscript <1>
+/tmp/nested/build/out.out <2>
+/tmp/nested/build/ <3>
+/tmp/nested <4>
+Waf: Leaving directory `/tmp/nested/build'
+'build' finished successfully (0.003s)
+---------------
+
+<1> ソースノードへの絶対パス
+<2> ビルドノードの絶対パスは使用中のvariantに依存する
+<3> コンフィギュレーションセットが与えられた場合、ディレクトリノードへの絶対パスはvariantを含むビルドディレクトリ表現だ
+<4> コンフィギュレーションセットが与えられない場合、ディレクトリノードへの絶対パスはソースディレクトリへの絶対パスとなる
+
+備考: 'relpath_gen' や 'srcpath' などの他のいくつかのメソッドが提供されている。 http://docs.waf.googlecode.com/git/apidocs_16/index.html[APIドキュメント]を参照。
+
+=== BuildContext特有のメソッド
+
+==== ソースとビルドノード
+
++wscript+ ファイルの中で _sources_ と _targets_ はカレントディレクトリに存在するかのように宣言されるが 、ターゲットファイルはビルドディレクトリに出力される。
+この振舞いを有効にするには、_top_ ディレクトリ以下の構造が _out_ ディレクトリ以下に複製されなくてはならない。
+例えば、 +demos/c+ の *program* フォルダは同等な構造をビルドディレクトリにもつ:
+
+[source,shishell]
+---------------
+$ cd demos/c
+$ tree
+.
+|-- build
+|   |-- c4che
+|   |   |-- build.config.py
+|   |   `-- _cache.py
+|   |-- config.h
+|   |-- config.log
+|   `-- program
+|       |-- main.c.0.o
+|       `-- myprogram
+|-- program
+|   |-- a.h
+|   |-- main.c
+|   `-- wscript_build
+`-- wscript
+---------------
+
+これをサポートするために、ビルドコンテキストは2つのノードを提供する：
+
+. srcnode: 最上位ディレクトリを表すノード
+. bldnode: ビルドディレクトリを表すノード
+
+ソースノードからビルドノードを得る、およびその逆を行うには、次のメソッドが使える：
+
+. Node.get_src()
+. Node.get_bld()
+
+==== ビルドフェーズ中のノードの使用
+
+_srcnode_ と _bldnode_ を直接使うこともできるが、次の3つのラッパーメソッドがより使い易い。
+これらはターゲットを表す文字列を入力として受け付け、単一のノードを返す：
+
+. *find_dir*: ノードを返す。フォルダがシステムに存在しない場合はNoneを返す。
+. *find_resource*: ソースディレクトリ次のノード、ビルドディレクトリ次のノード、もしくはそのようなノードが存在しない場合はNoneを返す。もしファイルがビルドディレクトリにない場合、ノードのシグネチャは計算されてキャッシュにいれられる(ファイルの中身のハッシュ).
+. *find_or_declare*: ノードを返すかビルドディレクトリに対応するノードを作る。
+
+そのうえ、それらはすべて、ビルドディレクトリに必要なディレクトリ構造を作る _find_dir_ を内部的に使う。
+なぜならば、ビルドが開始される前にビルドディレクトリでフォルダが複製され得るため、可能な場所ではすべてそれを使うことが推奨される：
+
+[source,python]
+---------------
+def build(bld):
+    p = bld.path.parent.find_dir('src') <1>
+    p = bld.path.find_dir('../src') <2>
+---------------
+
+<1> 非推奨、 _find_dir_ を代わりに使うべき	
+<2> パスのセパレータはプラットフォームに応じて自動的に変換される
+
+==== ノード、タスク、タスクジェネレータ
+
+前の章で見たように、タスクオブジェクトは入力および出力ノードのリストとして表現されるファイルの処理を行う。
+タスクジェネレータは通常、文字列で与えられた入力ファイルを処理し、ノードを生成してタスクにバインドする。
+
+ビルドディレクトリは有効、無効にできるため、次のファイルは不正である: footnote:[ファイルのコピーを避けられない場合、ベストプラクティスはファイル名を変更することだ]
+
+[source,python]
+---------------
+def build(bld):
+    bld(rule='cp ${SRC} ${TGT}', source='foo.txt', target='foo.txt')
+---------------
+
+実際に対応するビルドディレクトリに同じ名前でファイルをコピーするには、曖昧さをなくさなくてはならない：
+
+[source,python]
+---------------
+def build(bld):
+    bld(
+        rule   = 'cp ${SRC} ${TGT}',
+        source = bld.path.make_node('foo.txt'),
+        target = bld.path.get_bld().make_node('foo.txt')
+    )
+---------------
+
+// ==== Serialization concerns
+

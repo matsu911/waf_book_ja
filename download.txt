@@ -1,0 +1,162 @@
+== ダウンロードおよびインストール
+
+=== Wafファイルの入手
+
+Wafプロジェクト http://code.google.com/p/waf[Google Code] から入手できる。
+現行のWafは http://www.python.org[cPython] の2.3から3.1、もしくは http://www.jython.org[Jython] の2.5以上を必要とする。
+
+==== Wafバイナリのダウンロードおよび使い方
+
+WafのバイナリはPythonのスクリプトで、その以外のインストールは必要はない。
+書き込み可能なフォルダから実行できる。
+必要ならば +waf+ と名前を変更するとよい。
+
+[source,shishell]
+---------------
+$ wget http://waf.googlecode.com/files/waf-1.6.10
+$ mv waf-1.6.10 waf
+$ python waf --version
+waf 1.6.10 (54dc13ba5f51bfe2ae277451ec5ac1d0a91c7aaf)
+---------------
+
++waf+ ファイルのライブラリは圧縮されたバイナリストリームとしてファイル内に存在する。
+実行されると、ライブラリはカレントディレクトリの隠しフォルダに展開される。
+もしフォルダが削除されると、実行時に再度作成される。
+この仕組みにより、異なるバージョンのWafを同じフォルダで実行できる。
+
+[source,shishell]
+---------------
+$ ls -ld .waf*
+.waf-1.6.10-2c924e3f453eb715218b9cc852291170
+---------------
+
+備考: バイナリファイルは自前でビルドしインストールされたcPythonでは利用できないかもしれない。 http://docs.python.org/library/bz2.html[bzip2] による圧縮サポートが必要である。
+
+==== ソースコードからのWafのビルド
+
+WafのビルドにはPythonインタプリタのバージョンが2.6から3.1の範囲であることが要求される。
+ソースコードはPython2.3, 2.4および2.5をサポートするように処理される。
+
+[source,shishell]
+---------------
+$ wget http://waf.googlecode.com/files/waf-1.6.10.tar.bz2
+$ tar xjvf waf-1.6.10.tar.bz2
+$ cd waf-1.6.10
+$ python waf-light
+Configuring the project
+'build' finished successfully (0.001s)
+Checking for program python              : /usr/bin/python
+Checking for python version              : (2, 6, 5, 'final', 0)
+'configure' finished successfully (0.176s)
+Waf: Entering directory `/waf-1.6.10/build'
+[1/1] create_waf:  -> waf
+Waf: Leaving directory `/waf-1.6.10/build'
+'build' finished successfully (2.050s)
+---------------
+
+古いインタプリタについては、bzip2の替わりにgzipの圧縮で +waf+ をビルドすることができる。
+
+[source,shishell]
+---------------
+$ python waf-light --zip-type=gz
+---------------
+
+_waflib/extras_ フォルダに存在するファイルはテストの段階にあるWafツールの拡張だ。
+これらの拡張は _--tools_ スイッチによってWafバイナリに追加される。
+
+[source,shishell]
+---------------
+$ python waf-light --tools=compat15,swig,doxygen
+---------------
+
+_compat15_ は以前のWafのバージョンとの互換性を提供するツールだ。
+削除するには _--prelude_ スイッチを変えることによって初期化を変更する必要がある。
+
+[source,shishell]
+---------------
+$ python waf-light --make-waf --prelude='' --tools=swig
+---------------
+
+最後に、外部ツールをインポートし、初期化時に読み込む方法を示す。
+`aba.py` はカレントディレクトリに存在すると仮定する。
+
+[source,python]
+---------------
+def foo():
+	from waflib.Context import WAFVERSION
+	print("This is Waf %s" % WAFVERSION)
+---------------
+
+次のように実行することで、実行時に 'foo' をインポートして実行する独自のWafファイルが作られる。
+
+[source,shishell]
+---------------
+$ python waf-light --make-waf --tools=compat15,$PWD/aba.py
+   --prelude=$'\tfrom waflib.extras import aba\n\taba.foo()'
+$ ./waf --help
+This is Waf 1.6.10
+[...]
+---------------
+
+'extras' に追加される外部ファイルは _--tools_ スイッチに絶対パスで指定する。
+それらのファイルはPythonファイルである必要はないが、Wafモジュールに存在する関数やクラスを変更する初期化コードの追加が典型的な用途だ。
+http://code.google.com/p/waf/source/browse/trunk/build_system_kit/[build system kit]にはWafから派生した独自のビルドシステムを作る様々な例がある。
+
+=== Wafファイルの使い方
+
+==== パーミッションとエイリアス
+
+WafスクリプトはPythonのスクリプトなので、通常 +python+ を呼ぶことで実行される。
+
+[source,shishell]
+---------------
+$ python waf
+---------------
+
+Unix系のシステムでは、実行権限を付与することで毎回 +python+ を呼ぶ必要はなく、便利である。
+
+[source,shishell]
+---------------
+$ chmod 755 waf
+$ ./waf --version
+waf 1.6.10 (54dc13ba5f51bfe2ae277451ec5ac1d0a91c7aaf)
+---------------
+
+コマンドラインインタプリタがエイリアスをサポートするならば、次のようにエイリアスを設定することを推奨する。
+
+[source,shishell]
+---------------
+$ alias waf=$PWD/waf
+$ waf --version
+waf 1.6.10 (54dc13ba5f51bfe2ae277451ec5ac1d0a91c7aaf)
+---------------
+
+もしくは、実行パスにWafバイナリの位置を追加することもできる。
+
+[source,shishell]
+---------------
+$ export PATH=$PWD:$PATH
+$ waf --version
+waf 1.6.10 (54dc13ba5f51bfe2ae277451ec5ac1d0a91c7aaf)
+---------------
+
+本書の次のセクションでは、 +waf+ で直接コマンドが呼べるように、エイリアスもしくは実行形式へのパスが設定されているものとする。
+
+==== ローカルのwaflibフォルダ
+
+バイナリファイルから自動的にWafのライブラリがアンパックされるが、ライブラリを可視フォルダに入れておく必要があることがある。
+例えば、 +waf-light+ はライブラリファイルを含まないので、 +waf+ を作る際に +waflib+ ディレクトリが使われる。
+
+次のダイアグラムで +waflib+ ディレクトリを探索する過程を示す。
+
+image::waflib{PIC}["waflibの探索"{backend@docbook:,width=220:},align="center"]
+
+
+==== 移植性に関する懸念
+
+デフォルトでは、推奨されるインタプリタはcPythonであるが、ユーザーの利便性のために、http://www.jython.org[Jython]インタプリタのバージョン2.5のコピーをWafの実行形式と一緒に再配布することができる。
+
+備考: 'waf', 'jython2.5.jar' およびソースコードを含むプロジェクトはほぼどこでも使うことができる
+
+注意: 'waf' スクリプトはキャッシュファイルをアンパックするため、書込み可能なフォルダに配置されなくてはならない
+

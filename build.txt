@@ -1,0 +1,401 @@
+== ビルド
+
+ここではビルドターゲットを処理するのに用られるビルドフェーズに関して詳細を提供する。
+
+=== エッセンシャルなビルドの概念
+
+==== ビルドの順序と依存性
+
+ビルドプロセスの部分をなす、いくつかの概念を説明するため、ここでは新たな例を使う。
+ファイル +foo.txt+ と +bar.txt+ は +wscript+ のコピーによって作られ、ファイル +foobar.txt+ は生成されたファイルの結合によって作られる。
+ここに要約する: footnote:[この例はデモ用であるが、実際、ファイルのコピーを避けるためのベストプラクティスと考えられる]
+
+[source,shishell]
+---------------
+cp: wscript -> foo.txt
+cp: wscript -> bar.txt
+cat: foo.txt, bar.txt -> foobar.txt
+--------------
+
+3行のそれぞれの行は実行されるコマンドを表す。
+_cp_ コマンドがいかなる順序、もしくは並列に実行されようが、_cat_ コマンドは他のすべてのコマンドの実行後に実行される。
+*ビルド順序* に対する制約は次で表現される http://en.wikipedia.org/wiki/Directed_acyclic_graph[非循環有向グラフ]:
+
+image::dag_tasks{PIC}["同一のビルドのタスク表現"{backend@docbook:,width=260:},align="center"]
+
+入力ファイルである +wscript+ が変更されると、出力ファイルの +foo.txt+ はもう一度作られる。
+ファイル +foo.txt+ は ファイル +wscript+ に依存しているといえる。
+*ファイルの依存性* も非循環有向グラフで表現される：
+
+image::dag_nodes{PIC}["単純なビルドにおける依存関係"{backend@docbook:,width=120:},align="center"]
+
+プロジェクトのビルドは、これらの制約を考慮したスケジュールによるコマンドの実行から構成される。
+ビルド順序を保ちならが並列に実行し、依存関係を用いて不要なコマンドの実行がスキップされると、ビルドは高速化される。
+
+Wafでは、コマンドは *task objects* で表現される。
+依存性はタスククラスによって使われ、それはファイルに基づくものか、特別な制約を課す抽象である。
+
+==== 直接的なタスク宣言
+
+ここでは、ビルドセクションで直接的にタスクを宣言することで、前のセクションのビルドを表現している:
+
+// build_manual_tasks
+[source,python]
+---------------
+def configure(ctx):
+	pass
+
+from waflib.Task import Task
+class cp(Task): <1>
+	def run(self): <2>
+		return self.exec_command('cp %s %s' % (
+				self.inputs[0].abspath(), <3>
+				self.outputs[0].abspath()
+			)
+		)
+
+class cat(Task):
+	def run(self):
+		return self.exec_command('cat %s %s > %s' % (
+				self.inputs[0].abspath(),
+				self.inputs[1].abspath(),
+				self.outputs[0].abspath()
+			)
+		)
+
+def build(ctx):
+
+	cp_1 = cp(env=ctx.env) <4>
+	cp_1.set_inputs(ctx.path.find_resource('wscript')) <5>
+	cp_1.set_outputs(ctx.path.find_or_declare('foo.txt'))
+	ctx.add_to_group(cp_1) <6>
+
+	cp_2 = cp(env=ctx.env)
+	cp_2.set_inputs(ctx.path.find_resource('wscript'))
+	cp_2.set_outputs(ctx.path.find_or_declare('bar.txt'))
+	ctx.add_to_group(cp_2)
+
+	cat_1 = cat(env=ctx.env)
+	cat_1.set_inputs(cp_1.outputs + cp_2.outputs)
+	cat_1.set_outputs(ctx.path.find_or_declare('foobar.txt'))
+	ctx.add_to_group(cat_1)
+---------------
+
+<1> タスククラスの宣言
+<2> Wafのタスクはターゲットを生成するための *run* メソッドをもつ
+<3> _waflib.Task.Task_ のインスタンスは使用するファイルを表す入力および出力ファイルのオブジェクト(ノードオブジェクト)をもつ
+<4> 手動による新たなタスクインスタンスの作成
+<5> _waflib.Node.Node_ オブジェクトとして表現された入力および出力ファイルの設定
+<6> 実行のためのビルドコンテキストにタスクを追加(しかしながら、すぐには実行されない)
+
+実行の出力結果は次のようになる：
+
+[source,shishell]
+---------------
+$ waf clean build <1>
+'clean' finished successfully (0.003s)
+Waf: Entering directory `/tmp/build_manual_tasks/build'
+[1/3] cp: wscript -> build/foo.txt
+[2/3] cp: wscript -> build/bar.txt
+[3/3] cat: build/foo.txt build/bar.txt -> build/foobar.txt
+Waf: Leaving directory `/tmp/build_manual_tasks/build'
+'build' finished successfully (0.047s)
+
+$ waf build <2>
+Waf: Entering directory `/tmp/build_manual_tasks/build'
+Waf: Leaving directory `/tmp/build_manual_tasks/build'
+'build' finished successfully (0.007s)
+
+$ echo " " >> wscript <3>
+
+$ waf build
+Waf: Entering directory `/tmp/build_manual_tasks/build'
+[1/3] cp: wscript -> build/foo.txt <4>
+[2/3] cp: wscript -> build/bar.txt
+[3/3] cat: build/foo.txt build/bar.txt -> build/foobar.txt
+Waf: Leaving directory `/tmp/build_manual_tasks/build'
+'build' finished successfully (0.043s)
+---------------
+
+<1> このタスクは _clean_ コマンドでは実行されない
+<2> ビルドは再度生成されるのを避けるために、ファイルの痕跡を保つ
+<3> ソースファイルのひつとを変更する
+<4> 依存関係グラフによりリビルドされる
+
+覚えておくべきこと:
+
+. 実行順序はタスクインスタンスの入力と出力のセットから *自動計算* される
+. 依存関係はノードオブジェクト(ビルドとビルドの間にファイルのハッシュが保存され、比較される)から *自動計算* (ファイルは必要なときにリビルド)される
+. 順序制約のないタスクはデフォルトで並列に実行される
+
+==== タスクジェネレータによるタスクのカプセル化
+
+直接タスクを宣言するのはtediousでスクリプトが長くなる。
+機能的には、次は前の例と同等だ：
+
+// build_task_gen
+[source,python]
+---------------
+def configure(ctx):
+	pass
+
+def build(ctx):
+	ctx(rule='cp ${SRC} ${TGT}', source='wscript', target='foo.txt')
+	ctx(rule='cp ${SRC} ${TGT}', source='wscript', target='bar.txt')
+	ctx(rule='cat ${SRC} > ${TGT}', source='foo.txt bar.txt', target='foobar.txt')
+---------------
+
+*ctx(...)* コールはクラス _waflib.TaskGen.task_gen_ へのショートカットで、このクラスのインスタンスは *タスクジェネレータオブジェクト* と呼ばれる. 
+タスクジェネレータは遅延コンテナで、必要なときにタスクとタスククラスの生成のみを行う：
+
+// build_lazy_tg
+[source,python]
+---------------
+def configure(ctx):
+	pass
+
+def build(ctx):
+	tg = ctx(rule='touch ${TGT}', target='foo')
+	print(type(tg))
+	print(tg.tasks)
+	tg.post()
+	print(tg.tasks)
+	print(type(tg.tasks[0]))
+---------------
+
+出力結果：
+
+[source,shishell]
+---------------
+waf configure build
+Setting top to   : /tmp/build_lazy_tg
+Setting out to   : /tmp/build_lazy_tg/build
+'configure' finished successfully (0.204s)
+Waf: Entering directory `/tmp/build_lazy_tg/build'
+<class 'waflib.TaskGen.task_gen'> <1>
+[] <2>
+[{task: foo  -> foo}] <3>
+<class 'waflib.Task.foo'> <4>
+[1/1] foo:  -> build/foo
+Waf: Leaving directory `/tmp/build_lazy_tg/build'
+'build' finished successfully (0.023s)
+---------------
+
+<1> タスクジェネレータ型
+<2> 生成されたタスクはリスト _tasks_ (0..nタスクが追加され得る)に保存される
+<3> タスクはメソッドpost()の呼出後に作られる - 通常自動で内部的に呼び出される
+<4> ターゲット +foo+ のために新しいタスククラスが作られる
+
+==== ビルドフェーズの外観
+
+ビルドプロセスの高レベルの外観は次のダイアグラムで表現される：
+
+image::build_overview{PIC}["ビルドフェーズの外観"{backend@docbook:,width=250:},align="center"]
+
+備考: すべてのタスクはすべての実行に先立って作られる。新しいタスクはビルド開始後に作られるが、依存関係は低レベルのAPIによって設定しなくてはならない。
+
+=== さらなるビルドオプション
+
+いかなるオペレーションもタスクの一部として実行することができ、いくつかのシナリオは典型的で、便利な関数を提供することは理にかなっている。
+
+==== ビルド前後における特別なルーチンの実行
+
+ユーザ関数はbuildコマンド(コールバック)中の2つの主要な時に実行されるようバインドすることができる：
+
+. ビルド開始の直前(bld.add_pre_fun)
+. ビルド成功完了直後(bld.add_post_fun)
+
+これはビルド終了後のテストを実行する方法だ：
+
+// build_pre_post
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def options(ctx):
+	ctx.add_option('--exe', action='store_true', default=False,
+		help='execute the program after it is built')
+
+def configure(ctx):
+	pass
+
+def pre(ctx): <1>
+	print('before the build is started')
+
+def post(ctx):
+	print('after the build is complete')
+	if ctx.cmd == 'install': <2>
+		if ctx.options.exe: <3>
+			ctx.exec_command('/sbin/ldconfig') <4>
+
+def build(ctx):
+	ctx.add_pre_fun(pre) <5>
+	ctx.add_post_fun(post)
+---------------
+
+<1> コールバックはビルドコンテキストをユニークなパラメータ 'ctx' として引数にとる
+<2> コマンドタイプにアクセス
+<3> コマンドラインオプションにアクセス
+<4> 共通のシナリオとして、ファイルのインストール後にldconfigqを呼び出す
+<5> 後の実行のために実行する関数のスケジューリング。Pythonの関数はオブジェクトでもある
+
+上記を実行すると、次の出力が得られる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build install --exe
+'distclean' finished successfully (0.005s)
+'configure' finished successfully (0.011s)
+Waf: Entering directory `/tmp/build_pre_post/build'
+before the build is started <1>
+Waf: Leaving directory `/tmp/build_pre_post/build'
+after the build is complete <2>
+'build' finished successfully (0.004s)
+Waf: Entering directory `/tmp/build_pre_post/build'
+before the build is started
+Waf: Leaving directory `/tmp/build_pre_post/build'
+after the build is complete
+/sbin/ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied <3>
+'install' finished successfully (15.730s)
+---------------
+
+<1> 'bld.add_pre_fun' によってバインドされた関数の出力
+<2> 'bld.add_post_fun' によってバインドされた関数の出力
+<3> インストール時の実行
+
+
+==== ファイルのインストール
+
+3つのビルドコンテキストメソッドはビルド中もしくは後に作られたファイルのインストールのために提供される：
+
+. install_files: フォルダにいくつかのファイルをインストール
+. install_as: 異なる名前でターゲットをインストール
+. symlink_as: サポートされるプラットフォームにシンボリックリンクを作成
+
+[source,python]
+---------------
+def build(bld):
+	bld.install_files('${PREFIX}/include', ['a1.h', 'a2.h']) <1>
+	bld.install_as('${PREFIX}/dir/bar.png', 'foo.png') <2>
+	bld.symlink_as('${PREFIX}/lib/libfoo.so.1', 'libfoo.so.1.2.3') <3>
+
+	env_foo = bld.env.derive()
+	env_foo.PREFIX = '/opt'
+	bld.install_as('${PREFIX}/dir/test.png', 'foo.png', env=env_foo) <4>
+
+	start_dir = bld.path.find_dir('src/bar')
+	bld.install_files('${PREFIX}/share', ['foo/a1.h'],
+		cwd=start_dir, relative_trick=True) <5>
+
+	bld.install_files('${PREFIX}/share', start_dir.ant_glob('**/*.png'), <6>
+		cwd=start_dir, relative_trick=True)
+---------------
+
+<1> ターゲットに様々なファイルをインストール
+<2> 1つのファイルをインストールし、名前を変更
+<3> シンボリックリンクの作成
+<4> コンフィギュレーションセットの上書き('env' は3つのメソッドinstall_files、install_as、symlink_asでoptionalだ)
+<5> スクリプトからsrc/bar/foo/a1.hとして見えるファイルを '$\{PREFIX}/share/foo/a1.h' にインストール
+<6> 再帰的にpngファイルのインストールし、src/bar/のフォルダ構造を保つ
+
+備考: メソッド _install_files_ 、 _install_as_ 、 _symlink_as_ は _waf install_ か _waf uninstall_ の間でのみ何かをなし、これらは他のbuildコマンドには影響を与えない
+
+==== タスクジェネレータの列挙と特定のタスクジェネレータの強制的実行
+
+_list_ コマンドは宣言されたタスクジェネレータを表示するのに使われる：
+
+// build_list
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	pass
+
+def build(ctx):
+	ctx(source='wscript', target='foo.txt', rule='cp ${SRC} ${TGT}')
+	ctx(target='bar.txt', rule='touch ${TGT}', name='bar')
+---------------
+
+デフォルトでは、タスクジェネレータの名前は _target_ アトリビュートから決まる：
+
+[source,shishell]
+---------------
+$ waf configure list
+'configure' finished successfully (0.005s)
+foo.txt
+bar
+'list' finished successfully (0.008s)
+---------------
+
+名前の値の主な用途は _--targets_ オプションによって強制的に部分的なビルドを行うことだ。
+次を比較：
+
+[source,shishell]
+---------------
+$ waf clean build
+'clean' finished successfully (0.003s)
+Waf: Entering directory `/tmp/build_list/build'
+[1/2] foo.txt: wscript -> build/foo.txt
+[2/2] bar:  -> build/bar.txt
+Waf: Leaving directory `/tmp/build_list/build'
+'build' finished successfully (0.028s)
+
+$ waf clean build --targets=foo.txt
+'clean' finished successfully (0.003s)
+Waf: Entering directory `/tmp/build_list/build'
+[1/1] foo.txt: wscript -> build/foo.txt
+Waf: Leaving directory `/tmp/build_list/build'
+'build' finished successfully (0.022s)
+---------------
+
+==== デバッグのためのステップバイステップの実行 ( _step_ コマンド)
+
+_step_ は特定のタスクの実行に使われ、終了コードとエラーメッセージを返す。
+これは特にデバッグに有用だ：
+
+[source,shishell]
+---------------
+waf step --files=test_shlib.c,test_staticlib.c
+Waf: Entering directory `/tmp/demos/c/build'
+c: shlib/test_shlib.c -> build/shlib/test_shlib.c.1.o
+ -> 0
+cshlib: build/shlib/test_shlib.c.1.o -> build/shlib/libmy_shared_lib.so
+ -> 0
+c: stlib/test_staticlib.c -> build/stlib/test_staticlib.c.1.o
+ -> 0
+cstlib: build/stlib/test_staticlib.c.1.o -> build/stlib/libmy_static_lib.a
+ -> 0
+Waf: Leaving directory `/tmp/demos/c/build'
+'step' finished successfully (0.201s)
+---------------
+
+この場合 +.so+ ファイルもリビルドされる。
+コマンドライン引数filesはカンマ区切りの正規表現のリストとして解釈されるため、次は異なる出力を生成する：
+
+[source,shishell]
+---------------
+$ waf step --files=test_shlib.c$
+Waf: Entering directory `/tmp/demos/c/build'
+c: shlib/test_shlib.c -> build/shlib/test_shlib.c.1.o
+ -> 0
+Waf: Leaving directory `/tmp/demos/c/build'
+'step' finished successfully (0.083s)
+---------------
+
+最後に、実行されるタスクはソースかターゲットかを特定するために、'in:' または 'out:' を前につけることができる：
+
+[source,shishell]
+---------------
+$ waf step --files=out:build/shlib/test_shlib.c.1.o
+Waf: Entering directory `/tmp/demos/c/build'
+cc: shlib/test_shlib.c -> build/shlib/test_shlib.c.1.o
+ -> 0
+Waf: Leaving directory `/tmp/demos/c/build'
+'step' finished successfully (0.091s)
+---------------
+
+備考: _waf step_ を使うと、たとえいくつかのタスクが0以外のリターンコードを返しても、すべてのタスクはシーケンシャルに実行される
+

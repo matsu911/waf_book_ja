@@ -1,0 +1,353 @@
+=== 一般的な目的のタスクジェネレータ
+
+これまで、さまざまなタスクジェネレータの使用例を示してきた。
+この章ではタスクジェネレータの構造および用途を詳述する。
+
+==== タスクジェネレータの定義
+
+Makeに類似したルールに関する章でどのようにアトリビュート 'rule' が処理されるかを示した。
+名前と拡張子に基づくファイル処理に関する章でどのようにアトリビュート 'source' が処理されるかを示した(ruleアトリビュートの不在)。
+'どのようなアトリビュート' でも処理するために次のプロパティを保持する：
+
+. アトリビュートはタスクジェネレータがタスクを生成するためにセットされたときにのみ処理される(遅延処理)
+. オーソライズされたアトリビュートのリストは存在しない(タスクジェネレータはユーザスクリプトによって拡張される)
+. タスクジェネレータのインスタンス単位でアトリビュートの処理が制御される(特定のタスクジェネレータのための特別なルール)
+. 拡張は独立したフィイルに分割される(Wafツール間の低いカップリング)
+
+そのようなシステムを実装することは難しい問題で、非常に異なるデザインの生成を引起こす：
+
+. _タスクジェネレータのサブクラスの階層_ Wafツール間の高いカップリングのため廃棄された: ハイブリッドなアプリケーションのビルドではCツールがDツールの知識を必要とする
+. _メソッド修飾(メソッド呼出しのリンクリストの生成)_ 安全にメソッドを置換もしくは無効にすることはもはや不可能(追加のみ可能)で、このシステムはすぐになくなった
+. _フラットメソッドと実行制約の宣言_ この概念はアスペクト指向プログラミングに近く、プログラマを恐れさせる
+
+これまで、3番目のデザインがもっとも柔軟性があり保たれてきた。
+これはタスクジェネレータメソッドを定義する方法だ：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	v = bld(myattr='Hello, world!')
+	v.myattr = 'Hello, world!' <1>
+	v.myMethod() <2>
+
+from waflib import TaskGen
+
+@TaskGen.taskgen_method <3>
+def myMethod(tgen): <4>
+	print(getattr(self, 'myattr', None)) <5>
+---------------
+
+<1> アトリビュートは引数もしくはオブジェクトへのアクセスによってセットされる。この例では2度セットされる
+<2> タスクジェネレータのメソッドの明示的な呼出し
+<3> Pythonデコレータの使用
+<4> タスクジェネレータのメソッドは現在のインスタンスを表すユニークな引数をとる
+<5> アトリビュート 'myattr' が存在する場合(この例の場合)、処理する
+
+ビルドのアウトプットは次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build
+'distclean' finished successfully (0.001s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/simpleproject/build'
+hello world
+Waf: Leaving directory `/tmp/simpleproject/build'
+'build' finished successfully (0.003s)
+---------------
+
+備考: Pythonのクラスに新しいメソッドをバインドするように、メソッドは 'setattr' を直接使うことでバインドすることができる
+
+==== ビルド中のメソッドの実行
+
+これまで、定義されたタアスクジェネレータメソッドは明示的な呼出しによってのみ実行されていた。
+ビルドフェーズでタスクジェネレータを実行させるためには別のデコレータが必要だ。
+アップデートされた例：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(myattr='Hello, world!')
+
+from waflib import TaskGen
+
+@TaskGen.taskgen_method <1>
+@TaskGen.feature('*') <2>
+def methodName(self):
+	print(getattr(self, 'myattr', None))
+---------------
+
+<1> メソッドをタスクジェネレータクラスにバインド('TaskGen.feature' のような他のメソッドが使われる場合、冗長)
+<2> メソッドをシンボル 'myfeature' にバインド
+
+実行結果は次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build --zones=task_gen <1>
+'distclean' finished successfully (0.004s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/simpleproject/build'
+23:03:44 task_gen posting objects (normal)
+23:03:44 task_gen posting >task_gen '' of type task_gen defined in dir:///tmp/simpleproject> 139657958706768 <2>
+23:03:44 task_gen -> exec_rule (139657958706768) <3>
+23:03:44 task_gen -> process_source (139657958706768) <4>
+23:03:44 task_gen -> methodName (139657958706768) <5>
+Hello, world!
+23:03:44 task_gen posted <6>
+Waf: Leaving directory `/tmp/simpleproject/build'
+23:03:44 task_gen posting objects (normal)
+'build' finished successfully (0.004s)
+---------------
+
+<1> デバッグゾーン 'task_gen' は実行されたタスクジェネレータのメソッドを表示するために使用
+<2> どのタスクジェネレータが実行されたかを表示
+<3> メソッド 'exec_rule' は 'rule' を処理するために使われる。これは常に実行される
+<4> メソッド 'process_source' は 'source' アトリビュートを処理するために使われる。これはメソッド 'exec_rule' が 'rule' アトリビュートを処理する場合を除いて常に実行される
+<5> タスクジェネレータは実行され 'Hello, world!' を出力
+<6> タスクジェネレータのメソッドが実行されタスクジェネレータは実行済とマークされる(posted)
+
+==== タスクジェネレータの特徴
+
+これまで、追加されたタスクジェネレータメソッドはすべてのタスクジェネレータインスタンスによって実行されるためのものだ。
+特別なタスクジェネレータに実行を制限するためには 'feature' デコレータを使う:
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(features='ping')
+	bld(features='ping pong')
+
+from waflib import TaskGen
+
+@TaskGen.feature('ping')
+def ping(self):
+	print('ping')
+
+@TaskGen.feature('pong')
+def pong(self):
+	print('pong')
+---------------
+
+実行結果の出力は次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build --zones=task_gen
+'distclean' finished successfully (0.003s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/simpleproject/build'
+16:22:07 task_gen posting objects (normal)
+16:22:07 task_gen posting <task_gen '' of type task_gen defined in dir:///tmp/simpleproject> 140631018237584
+16:22:07 task_gen -> exec_rule (140631018237584)
+16:22:07 task_gen -> process_source (140631018237584)
+16:22:07 task_gen -> ping (140631018237584)
+ping
+16:22:07 task_gen posted
+16:22:07 task_gen posting <task_gen '' of type task_gen defined in dir:///tmp/simpleproject> 140631018237776
+16:22:07 task_gen -> exec_rule (140631018237776)
+16:22:07 task_gen -> process_source (140631018237776)
+16:22:07 task_gen -> pong (140631018237776)
+pong
+16:22:07 task_gen -> ping (140631018237776)
+ping
+16:22:07 task_gen posted
+Waf: Leaving directory `/tmp/simpleproject/build'
+16:22:07 task_gen posting objects (normal)
+'build' finished successfully (0.005s)
+---------------
+
+警告: タスクジェネレータのインスタンスは順番に処理されるが、タスクジェネレータのメソッドの実行には実行順序のための特別な宣言が必要だ。
+ここではメソッド 'pong' はメソッド 'ping' の前に実行される。
+
+==== タスクジェネレータメソッドの実行順序
+
+実行順序を制御するために、2つの新たなデコレータの追加が必要だ。
+'method1' 、 'method2' の順序で実行される2つのタスクジェネレータのカスタムメソッドで新たな例を示す：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(myattr='Hello, world!')
+
+from waflib import TaskGen
+
+@TaskGen.feature('*')
+@TaskGen.before('process_source', 'exec_rule')
+def method1(self):
+	print('method 1 %r' % getattr(self, 'myattr', None))
+
+@TaskGen.feature('*')
+@TaskGen.before('process_source')
+@TaskGen.after('method1')
+def method2(self):
+	print('method 2 %r' % getattr(self, 'myattr', None))
+---------------
+
+実行結果の出力は次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build --zones=task_gen
+'distclean' finished successfully (0.003s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/simpleproject/build'
+15:54:02 task_gen posting objects (normal)
+15:54:02 task_gen posting <task_gen of type task_gen defined in dir:///tmp/simpleproject> 139808568487632
+15:54:02 task_gen -> method1 (139808568487632)
+method 1 'Hello, world!'
+15:54:02 task_gen -> exec_rule (139808568487632)
+15:54:02 task_gen -> method2 (139808568487632)
+method 2 'Hello, world!'
+15:54:02 task_gen -> process_source (139808568487632)
+15:54:02 task_gen posted
+Waf: Leaving directory `/tmp/simpleproject/build'
+15:54:02 task_gen posting objects (normal)
+'build' finished successfully (0.005s)
+---------------
+
+==== 実行のためのメソッドの追加および削除
+
+メソッドの順序制約(前/後)はアトリビュート 'meths' のメソッドのリストのソートに使われる。
+ソートは一度行われ、リストはメソッドが実行されるにともなって消費される。
+最初のメソッドが実行されても新たなフィーチャーが追加されないこともあるが、新たなメソッドはself.methsに動的に追加される。
+ここに、最後に同じメソッドを追加することで無限ループを作る方法を示す：
+
+[source,python]
+---------------
+from waflib.TaskGen import feature
+
+@feature('*')
+def infinite_loop(self):
+	self.meths.append('infinite_loop')
+---------------
+
+同様に、メソッドは実行されるメソッドのリストから削除することができる：
+
+[source,python]
+---------------
+from waflib.TaskGen import feature
+
+@feature('*')
+@before_method('process_source')
+def remove_process_source(self):
+	self.meths.remove('process_source')
+---------------
+
+タスクジェネレータメソッドのワークフローは次の図で表現される：
+
+image::posting{PIC}["タスクジェネレータワークフロー"{backend@docbook:,width=320:},align="center"]
+
+==== タスクジェネレータ間の抽象的な依存関係の表現
+
+タスクジェネレータオブジェクト間の抽象的な依存関係を表現するために使われるタスクジェネレータをどのように使うことができるかについてはここでは説明しない。
+ここに新たなプロジェクトファイルが '/tmp/targets/' 以下にある：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(rule='echo A', always=True, name='A')
+	bld(rule='echo B', always=True, name='B')
+---------------
+
+'waf --targets=B' を実行することで、タスクジェネレータ 'B' のみがそのタスクを生成し、実行結果の出力は次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build --targets=B
+'distclean' finished successfully (0.000s)
+'configure' finished successfully (0.042s)
+Waf: Entering directory `/tmp/targets/build'
+[1/1] B:
+B
+Waf: Leaving directory `/tmp/targets/build'
+'build' finished successfully (0.032s)
+---------------
+
+これは 'B' が実行されたときにタスクジェネレータ 'A' がタスクを生成することを保証する方法だ：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+    pass
+
+def build(bld):
+    bld(rule='echo A', always=True, name='A')
+    bld(rule='echo B', always=True, name='B', depends_on='A')
+
+from waflib.TaskGen import feature, before_method
+@feature('*') <1>
+@before_method('process_rule')
+def post_the_other(self):
+    deps = getattr(self, 'depends_on', []) <2>
+    for name in self.to_list(deps):
+        other = self.bld.get_tgen_by_name(name) <3>
+        print('other task generator tasks (before) %s' % other.tasks)
+        other.post() <4>
+        print('other task generator tasks (after) %s' % other.tasks)
+---------------
+
+<1> このメソッドはすべてのタスクジェネレータについてアトリビュート `rule` が処理される前に実行される
+<2> アトリビュート `depends_on` が存在するならば処理を試みる
+<3> 名前によって同じバリアントのためのタスクジェネレータを獲得
+<4> 他のタスクジェネレータにタスクを生成することを強制
+
+アウトプットは次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build --targets=B
+'distclean' finished successfully (0.001s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/targets/build'
+other task generator tasks (before) [] <1>
+other task generator tasks (after) [ <2>
+        {task: A  -> }]
+[1/2] B:
+B
+[2/2] A: <3>
+A
+Waf: Leaving directory `/tmp/targets/build'
+'build' finished successfully (0.014s)
+---------------
+
+<1> 他のタスクジェネレータはまだ何もタスクを生成していない
+<2> タスクジェネレータはそのすべてのタスクを `post()` を呼出すことで生成する。
+<3> `--targets=B` が必要とされるにも拘わらず、ターゲット 'A' からのタスクは生成され実行される
+
+実際には、依存関係はしばしば他のタスクジェネレータから生成されたタスクオブジェクトを再利用する: ノード、コンフィギュレーションセット、など。
+これはuselibシステムによって使われる(次の章のC/C++ビルドを参照).
+

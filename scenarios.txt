@@ -1,0 +1,714 @@
+== アドバンスのシナリオ
+
+この章ではより複雑であまり一般的ではないシナリオのためのWafライブラリの例をいくつか示す。
+
+=== プロジェクトの構成
+
+==== 最初にコンパイラをビルド[[build_compiler_first]]
+
+次の例は残りのターゲットをビルドするためのコンパイラをビルドする方法を示す。
+要求は次のよう：
+
+. コンパラとすべての中間タスクを生成
+. 第2ステップのビルドでコンパイラを再利用
+. コンパイラは '.src' ファイルを後で処理される '.cpp' ファイルに変換
+. リビルドされたときにはコンパラを再度呼び出す(コンパイラに依存関係を追加)
+
+最初にするべきことは期待されるユーザスクリプトを書くことだ：
+
+// scenarios_compiler
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+    ctx.load('g++')
+    ctx.load('src2cpp', tooldir='.')
+
+def build(ctx):
+    ctx.program( <1>
+        source = 'comp.cpp',
+        target = 'comp')
+
+    ctx.add_group() <2>
+
+    ctx.program(
+        source = 'main.cpp a.src', <3>
+        target = 'foo')
+---------------
+
+<1> 最初にコンパイラをビルドし、 _comp_ という名前のバイナリが得られる
+<2> 次のタスクの処理を開始する前にコンパイラが完成するように、新しいビルドグループを追加
+<3> ファイル 'a.src' は 'comp' によって 'a.cpp' に変換される
+
+_src → cpp_ 変換のためのコードは次のようになる：
+
+[source,python]
+---------------
+from waflib.Task import Task
+class src2cpp(Task): <1>
+    run_str = '${SRC[0].abspath()} ${SRC[1].abspath()} ${TGT}'
+    color   = 'PINK'
+
+from waflib.TaskGen import extension
+
+@extension('.src')
+def process_src(self, node): <2>
+    tg = self.bld.get_tgen_by_name('comp') <3>
+    comp = tg.link_task.outputs[0]
+    tsk = self.create_task('src2cpp', [comp, node], node.change_ext('.cpp')) <4>
+    self.source.extend(tsk.outputs) <5>
+---------------
+
+<1> 自前のコンパイラでソースを処理するための新たなタスククラスを宣言
+<2> このメソッドによって処理される、拡張子が '.src' のファイル
+<3> コンパイラを生成するタスクジェネレータへのリファレンスを獲得
+<4> タスク 'src → cpp' を生成し、コンパイラは最初のソースファイルとして使われる
+<5> 生成された 'cpp' ファイルも処理するために追加
+
+コンパイル結果は次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build -v
+'distclean' finished successfully (0.006s)
+Setting top to                           : /tmp/scenarios_compiler
+Setting out to                           : /tmp/scenarios_compiler/build
+Checking for program g++,c++             : /usr/bin/g++
+Checking for program ar                  : /usr/bin/ar
+'configure' finished successfully (0.118s)
+Waf: Entering directory `/tmp/scenarios_compiler/build'
+[1/5] cxx: comp.cpp -> build/comp.cpp.0.o
+10:21:14 runner ['/usr/bin/g++', '../comp.cpp', '-c', '-o', 'comp.cpp.0.o']
+[2/5] cxxprogram: build/comp.cpp.0.o -> build/comp <1>
+10:21:14 runner ['/usr/bin/g++', 'comp.cpp.0.o', '-o', '/tmp/scenarios_compiler/build/comp']
+[3/5] cxx: main.cpp -> build/main.cpp.1.o
+10:21:15 runner ['/usr/bin/g++', '../main.cpp', '-c', '-o', 'main.cpp.1.o']
+[4/5] src2cpp: a.src -> build/a.cpp
+10:21:15 runner ['/tmp/scenarios_compiler/build/comp', '../a.src', 'a.cpp'] <2>
+[5/5] cxxprogram: build/main.cpp.1.o -> build/foo <3>
+10:21:15 runner ['/usr/bin/g++', 'main.cpp.1.o', '-o', 'foo']
+Waf: Leaving directory `/tmp/scenarios_compiler/build'
+'build' finished successfully (1.009s)
+---------------
+
+<1> 'comp' 実行形式の生成
+<2> 'a.cpp' を生成するためにコンパイラを使う
+<3> 'a.cpp' と 'main.cpp' をコンパイルしリンクして実行形式 'foo' を生成する
+
+備考: `waf --targets=foo' が呼び出されたとき、タスクジェネレータ `comp' はタスクも生成する(前のグループのタスクジェネレータは処理される)。
+
+==== 任意のコンフィギュレーションファイルを与える
+
+ビルドが開始する前にファイルがビルドディレクトリにコピーされる。
+ビルドは他のターゲットをビルドするためにこのファイルを使うことができる。
+
+// scenarios_impfile
+[source,python]
+---------------
+cfg_file = 'somedir/foo.txt'
+
+def configure(conf):
+
+    orig = conf.root.find_node('/etc/fstab')
+    txt = orig.read() <1>
+
+    dest = conf.bldnode.make_node(cfg_file)
+    dest.parent.mkdir() <2>
+    dest.write(txt) <3>
+
+    conf.env.append_value('cfg_files', dest.abspath()) <4>
+
+def build(ctx):
+    ctx(rule='cp ${SRC} ${TGT}', source=cfg_file, target='bar.txt')
+---------------
+
+<1> ファイル '/etc/fstab' を読み込む
+<2> ファイル作成先のディレクトリが存在しない場合にそなえてディレクトリを作成
+<3> 新たなファイルをビルドディレクトリに作成
+<4> アウトプットをコンフィギュレーションファイルとしてマークしビルド中に使うことができる
+
+実行のアウトプットは次のようになる：
+
+[source,shishell]
+---------------
+$ waf configure build
+Setting top to     : /tmp/scenarios_impfile
+Setting out to     : /tmp/scenarios_impfile/build
+'configure' finished successfully (0.003s)
+Waf: Entering directory `/tmp/scenarios_impfile/build'
+[1/1] bar.txt: build/somedir/foo.txt -> build/bar.txt
+Waf: Leaving directory `/tmp/scenarios_impfile/build'
+'build' finished successfully (0.008s)
+
+$ tree
+.
+|-- build
+|   |-- bar.txt
+|   |-- c4che
+|   |   |-- build.config.py
+|   |   `-- _cache.py
+|   |-- config.log
+|   `-- somedir
+|       `-- foo.txt
+`-- wscript
+---------------
+
+
+
+=== 混在する拡張子とC/C++のフィーチャー
+
+==== 単一のタスクジェネレータによって処理されるファイル
+
+ここでidlファイルの処理で@extensionデコレータを説明しよう。
+拡張子.idlのファイルは処理され.cと.hファイルを生成する(`foo.idl` → `foo.c` + `foo.h`)。
+.cファイルは生成された後にコンパイルされなくてはならない。
+
+最初に、ユーザスクリプトで期待される宣言だ：
+
+// scenarios_idl
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+    conf.load('g++')
+
+def build(bld):
+    bld.program(
+        source = 'foo.idl main.cpp',
+        target = 'myapp'
+        )
+---------------
+
+ファイル +foo.idl+ はソースとしてリストされる。
+これは処理されて +foo.cpp+ になり、コンパイルされて +main.cpp+ とリンクされる。
+
+これはこのシナリオをサポートするコードだ：
+
+[source,python]
+---------------
+from waflib.Task import Task
+from waflib.TaskGen import extension
+
+class idl(Task):
+    run_str = 'cp ${SRC} ${TGT[0].abspath()} && touch ${TGT[1].abspath()}' <1>
+    color   = 'BLUE'
+    ext_out = ['.h'] <2>
+
+@extension('.idl')
+def process_idl(self, node):
+    cpp_node = node.change_ext('.cpp')
+    hpp_node = node.change_ext('.hpp')
+    self.create_task('idl', node, [cpp_node, hpp_node]) <3>
+    self.source.append(cpp_node) <4>
+---------------
+
+<1> デモのためのダミーのコマンド。実際にはルールは _omniidl -bcxx $\{SRC} -C$\{TGT}_ のようなものになる
+<2> idlタスクはヘッダを生成するので、 +cpp+ ファイルがコンパイルされる前に実行されなくてはならない
+<3> 拡張子 '.idl' からタスクを作成
+<4> C++コンパイラによってコンパイルされるように再度ファイルを追加
+
+実行結果は次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build -v
+'distclean' finished successfully (0.002s)
+Setting top to   : /tmp/scenarios_idl
+Setting out to   : /tmp/scenarios_idl/build
+Checking for program g++,c++   : /usr/bin/g++
+Checking for program ar        : /usr/bin/ar
+'configure' finished successfully (0.072s)
+Waf: Entering directory `/tmp/scenarios_idl/build'
+[1/4] idl: foo.idl -> build/foo.cpp build/foo.hpp
+19:47:11 runner 'cp ../foo.idl foo.cpp && touch foo.hpp'
+[2/4] cxx: main.cpp -> build/main.cpp.0.o
+19:47:11 runner ['/usr/bin/g++', '-I.', '-I..', '../main.cpp', '-c', '-o', 'main.cpp.0.o']
+[3/4] cxx: build/foo.cpp -> build/foo.cpp.0.o
+19:47:11 runner ['/usr/bin/g++', '-I.', '-I..', 'foo.cpp', '-c', '-o', 'foo.cpp.0.o']
+[4/4] cxxprogram: build/main.cpp.0.o build/foo.cpp.0.o -> build/myapp
+19:47:11 runner ['/usr/bin/g++', 'main.cpp.0.o', 'foo.cpp.0.o', '-o', 'myapp']
+Waf: Leaving directory `/tmp/scenarios_idl/build'
+'build' finished successfully (0.149s)
+---------------
+
+備考: この宣言による難点は、idlによって生成されたソースファイルは単一のタスクジェネレータからしか使うことができない点だ
+
+==== 複数のタスクジェネレータによって共有されるリソース
+
+複数のタスクジェネレータがidlのアウトプットを共有するとしよう。
+まずはそれっぽいユーザスクリプトを書くことから始める：
+
+// scenarios_idl2
+[source,python]
+---------------
+top = '.'
+out = 'out'
+
+def configure(ctx):
+    ctx.load('g++')
+
+def build(ctx):
+    ctx( <1>
+        source   = 'notify.idl',
+        name     = 'idl_gen')
+
+    ctx.program( <2>
+        source   = ['main.cpp'],
+        target   = 'testprog',
+        includes = '.',
+        add_idl  = 'idl_gen') <3>
+---------------
+
+<1> 最初のタスクジェネレータにあるidlファイルを処理する。このタスクジェネレータを 'idl_gen' と名付ける
+<2> 他のどこか(おそらく別のスクリプト)で、別のタスクジェネレータがidlの処理によって生成されたソースファイルを使う
+<3> 名前 'idl_gen' でidlを処理するタスクジェネレータを参照する
+
+このシナリオをサポートするコードは次のようになる：
+
+[source,python]
+---------------
+from waflib.Task import Task
+from waflib.TaskGen import feature, before_method, extension
+
+class idl(Task):
+	run_str = 'cp ${SRC} ${TGT[0].abspath()} && touch ${TGT[1].abspath()}'
+	color   = 'BLUE'
+	ext_out = ['.h'] <1>
+
+@extension('.idl')
+def process_idl(self, node):
+	cpp_node = node.change_ext('.cpp')
+	hpp_node = node.change_ext('.hpp')
+	self.create_task('idl', node, [cpp_node, hpp_node])
+	self.more_source = [cpp_node] <2>
+
+@feature('*')
+@before_method('process_source') <3>
+def process_add_source(self):
+	for x in self.to_list(getattr(self, 'add_idl', [])): <4>
+		y = self.bld.get_tgen_by_name(x)
+		y.post() <5>
+		if getattr(y, 'more_source', None):
+			self.source.extend(y.more_source) <6>
+---------------
+
+<1> C++タスクが実行される前にidlの処理は行われなくてはならない
+<2> アウトプットファイルを新たなアトリビュートにバインドする
+<3> 別のタスクジェネレータオブジェクトからソースを追加する
+<4> _add_idl_ を処理し他のタスクジェネレータを見つける
+<5> 他のタスクジェネレータにタスクを作成させる
+<6> ソースのリストを更新する
+
+タスク実行のアウトプットは最初の例のアウトプットとよく似たものとなるだろう：
+
+[source,shishell]
+---------------
+$ waf distclean configure build -v
+'distclean' finished successfully (0.007s)
+Setting top to  : /tmp/scenarios_idl2
+Setting out to  : /tmp/scenarios_idl2/build
+Checking for program g++,c++    : /usr/bin/g++
+Checking for program ar         : /usr/bin/ar
+'configure' finished successfully (0.080s)
+Waf: Entering directory `/tmp/scenarios_idl2/build'
+[1/4] idl: foo.idl -> build/foo.cpp build/foo.hpp
+20:20:24 runner 'cp ../foo.idl foo.cpp && touch foo.hpp'
+[2/4] cxx: main.cpp -> build/main.cpp.1.o
+20:20:24 runner ['/usr/bin/g++', '-I.', '-I..', '../main.cpp', '-c', '-o', 'main.cpp.1.o']
+[3/4] cxx: build/foo.cpp -> build/foo.cpp.1.o
+20:20:24 runner ['/usr/bin/g++', '-I.', '-I..', 'foo.cpp', '-c', '-o', 'foo.cpp.1.o']
+[4/4] cxxprogram: build/main.cpp.1.o build/foo.cpp.1.o -> build/testprog
+20:20:24 runner ['/usr/bin/g++', 'main.cpp.1.o', 'foo.cpp.1.o', '-o', 'testprog']
+Waf: Leaving directory `/tmp/scenarios_idl2/build'
+'build' finished successfully (0.130s)
+---------------
+
+=== タスクジェネレータメソッド
+
+==== 特定のアトリビュートの置換
+
+一般に、タスクジェネレータのアトリビュートは置換されず、次は +main.c+ をコンパイルしない：
+
+[source,python]
+---------------
+bld.env.FOO = '/usr/includes'
+bld.env.MAIN = 'main.c'
+bld(
+    features = 'c cprogram',
+    source   = '${MAIN}',
+    target   = 'app',
+    includes = '. ${FOO}')
+---------------
+
+このデザインの決定は2つの理由によるものだ：
+
+. アトリビュートを処理するとパフォーマンスが悪化する
+. 整合性のためにはすべてのアトリビュートが処理されるべきである
+
+それにもかかわらず、いくつかのアトリビュートを処理するためにWafにメソッドを提供する方法を示す。
+新たなタスクジェネレータメソッドを追加するには、他のメソッドとのインテグレーションについて考える必要がある: 特別な順序が存在するのか？
+答えはyesで、例えば、ソースアトリビュートはコンパイルタスクを作成するために使われる。
+何のメソッドが使われているかを表示するために、次のロギングキーをつけてWafを実行する:
+
+[source,shishell]
+---------------
+$ waf --zones=task_gen
+...
+19:20:51 task_gen posting task_gen 'app' declared in 'scenarios_expansion' <1>
+19:20:51 task_gen -> process_rule (9232720) <2>
+19:20:51 task_gen -> process_source (9232720)
+19:20:51 task_gen -> apply_link (9232720)
+19:20:51 task_gen -> apply_objdeps (9232720)
+19:20:51 task_gen -> process_use (9232720)
+19:20:51 task_gen -> propagate_uselib_vars (9232720)
+19:20:51 task_gen -> apply_incpaths (9232720)
+19:20:51 task_gen posted app
+---------------
+
+<1> タスクジェネレータの実行
+<2> メソッド名と()の中のタスクジェネレータID
+
+メソッドのリストから、 *process_rule* と *process_source* が _source_ アトリビュートを処理していることがわかる。
+_includes_ アトリビュートは *apply_incpaths* によって処理される。
+
+// scenarios_expansion
+[source,python]
+---------------
+from waflib import Utils, TaskGen
+@TaskGen.feature('*') <1>
+@TaskGen.before('process_source', 'process_rule', 'apply_incpaths') <2>
+def transform_strings(self):
+	for x in 'includes source'.split(): <3>
+		val = getattr(self, x, None)
+		if val:
+			if isinstance(val, str):
+				setattr(self, x, Utils.subst_vars(val, self.env)) <4>
+			elif isinstance(val, list):
+				for i in xrange(len(val)):
+					if isinstance(val[i], str):
+						val[i] = Utils.subst_vars(val[i], self.env)
+---------------
+
+<1> すべてのタスクジェネレータでこのメソッドを実行する
+<2> 考慮するメソッド
+<3> すべての興味のあるアトリビュートについてイテレートする
+<4> アトリビュートを代入する
+
+==== 特別なインクルードフラグの挿入
+
+C/C++プロジェクトではときどき、フラグが通常どのように処理されるかに係わらず、特定のフラグを他のフラグより前に挿入する必要がある。
+次のケースを考慮する: フラグ `-I.' を最初に(他のどのインクルードよりも前に)つけてすべてのC++のコンパイルを実行する。
+
+最初に、C++のコンパイルルールの定義を見ると、変数 'INCPATHS' がインクルードフラグを含むことがわかる:
+
+[source,python]
+---------------
+class cxx(Task.Task):
+    color   = 'GREEN'
+    run_str = '${CXX} ${CXXFLAGS} ${CPPPATH_ST:INCPATHS} ${CXX_SRC_F}${SRC} ${CXX_TGT_F}${TGT}'
+    vars    = ['CXXDEPS']
+    ext_in  = ['.h']
+    scan    = c_preproc.scan
+---------------
+
+インクルードフラグはメソッド 'apply_incpaths' によってセットされる。
+そのメソッドが実行された後で 'INCPATHS' を変更するのがトリックだ：
+
+// scenarios_incflags
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+    conf.load('g++')
+
+def build(bld):
+    bld.program(features='cxx cxxprogram', source='main.cpp', target='test')
+
+from waflib.TaskGen import after, feature
+
+@feature('cxx')
+@after_method('apply_incpaths')
+def insert_blddir(self):
+    self.env.prepend_value('INCPATHS', '.')
+---------------
+
+関連するケースとして、コンフィギュレーションヘッダを含んだ最上位ディレクトリを追加する方法を示す：
+
+[source,python]
+---------------
+@feature('cxx')
+@after_method('apply_incpaths', 'insert_blddir')
+def insert_srcdir(self):
+    path = self.bld.srcnode.abspath()
+    self.env.prepend_value('INCPATHS', path)
+---------------
+
+
+=== カスタムタスク
+
+==== 特定のタスクのコンパイルを強制する
+
+いくつかのアプリケーションでは、最終ビルドの日時を記録するとおもしろいことがある。
+Cでは、これはマクロ `__DATE__' と `__TIME__' を使うとできる。
+例えば、 +about.c+ ファイルが次を含む:
+
+[source,c]
+---------------
+void ping() {
+    printf("Project compiled: %s %s\n", __DATE__, __TIME__);
+}
+---------------
+
+ファイルは変更があるときにのみコンパイルされるので、 +about.c+ を強制的に再コンパイルする方法を見つける必要がある。
+まとめると、コンパイルは次のケースではいつでも行われるべきだ：
+
+. プロジェクト中の一つのCファイルがコンパイルされた
+. タスクのためのリンクフラグが変更された
+. マクロのためのオブジェクトを含むリンクタスクが削除された
+
+この振舞いを示すために、さまざまなCファイルを使うプロジェクトをセットアップする：
+
+// scenarios_end
+[source,python]
+---------------
+def options(opt):
+    opt.load('compiler_c')
+
+def configure(conf):
+    conf.load('compiler_c')
+
+def build(bld):
+    bld.program(
+        source   = 'main.c about.c',
+        target   = 'app',
+        includes = '.',
+        use      = 'my_static_lib')
+
+    bld.stlib(
+        source   = 'test_staticlib.c',
+        target   = 'my_static_lib')
+---------------
+
+mainファイルは日時を表示するために、 +about.c+ で定義された関数 _ping_ を呼び出すだけだ:
+
+[source,c]
+---------------
+#include "a.h"
+
+int main() {
+    ping();
+    return 0;
+}
+---------------
+
+依存関係を考慮するために、タスクメソッド _runnable_status_ は上書きされなくてはならない：
+
+[source,python]
+---------------
+import os
+from waflib import Task
+def runnable_status(self):
+    if self.inputs[0].name == 'about.c': <1>
+        h = 0 <2>
+        for g in self.generator.bld.groups:
+            for tg in g:
+                if isinstance(tg, TaskBase):
+                    continue <3>
+
+                h = hash((self.generator.bld.hash_env_vars(self.generator.env, ['LINKFLAGS']), h))
+                for tsk in getattr(tg, 'compiled_tasks', []): # all .c or .cpp compilations
+                    if id(tsk) == id(self):
+                        continue
+                    if not tsk.hasrun:
+                        return Task.ASK_LATER
+                    h = hash((tsk.signature(), h)) <4>
+        self.env.CCDEPS = h
+
+        try:
+            os.stat(self.generator.link_task.outputs[0].abspath()) <5>
+        except:
+            return Task.RUN_ME
+
+    return Task.Task.runnable_status(self) <6>
+
+from waflib.Tools.c import c <7>
+c.runnable_status = runnable_status
+---------------
+
+<1> もしタスクが +about.c+ を処理するならば
+<2> タスクが依存するハッシュ値(CCDEPS)を定義する
+<3> プロジェクトのすべてのタスクジェネレータについてイテレートする
+<4> リンクフラグと他のすべてのコンパイルタスクのシグネチャのハッシュ
+<5> まだ実行されていないのならば、タスクを実行する
+<6> 通常の振舞い
+<7> 'c' タスククラスを変更する
+
+実行すると次のようなアウトプットが生成される：
+
+[source,shishell]
+---------------
+$ waf
+Waf: Entering directory `/tmp/scenarios_end/build'
+[2/5] c: test_staticlib.c -> build/test_staticlib.c.1.o
+[3/5] cstlib: build/test_staticlib.c.1.o -> build/libmy_static_lib.a
+[4/5] c: about.c -> build/about.c.0.o
+[5/5] cprogram: build/main.c.0.o build/about.c.0.o -> build/app
+Waf: Leaving directory `/tmp/scenarios_end/build' <1>
+'build' finished successfully (0.088s)
+
+$ ./build/app
+Project compiled: Jul 25 2010 14:05:30
+
+$ echo " " >> main.c <2>
+
+$ waf
+Waf: Entering directory `/tmp/scenarios_end/build'
+[1/5] c: main.c -> build/main.c.0.o
+[4/5] c: about.c -> build/about.c.0.o <3>
+[5/5] cprogram: build/main.c.0.o build/about.c.0.o -> build/app
+Waf: Leaving directory `/tmp/scenarios_end/build'
+'build' finished successfully (0.101s)
+
+$ ./build/app
+Project compiled: Jul 25 2010 14:05:49
+---------------
+
+<1> すべてのファイルは最初のビルドでコンパイルされる
+<2> ファイル +main.c+ を変更する
+<3> ビルド時刻の文字列を更新するためにビルドは再度 +about.c+ を生成する
+
+==== 事前に名前のわからないソースファイルを生成するコンパイラ
+
+この問題の要求点は次のようになる：
+
+. コンパイラは *ソースファイルを作成する* (1つの .src ファイル -> 複数の .c ファイル)
+. 作成されるソーフファイルの名前は *コンパイラが実行されたときにのみわかる*
+. コンパイラは遅いので *必要なときにのみ* 実行される
+. 他のタスクは *生成されたファイルに依存する* (.cファイルをコンパイルしリンクして実行形式を作る)
+
+これを満すために、ソースファイルに関する情報はビルドの実行のをまたがって共有されなくてはならない：
+
+// scenarios_unknown
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+    conf.load('gcc')
+    conf.load('mytool', tooldir='.')
+
+def build(bld):
+    bld.env.COMP = bld.path.find_resource('evil_comp.py').abspath() <1>
+    bld.stlib(source='x.c foo.src', target='astaticlib') <2>
+---------------
+
+<1> コンパイラへのパス
+<2> _.src_ ファイルをもつ例
+
+_mytool_ の中身は次のようになる：
+
+[source,python]
+---------------
+import os
+from waflib import Task, Utils, Context
+from waflib.Utils import subprocess
+from waflib.TaskGen import extension
+
+@extension('.src')
+def process_shpip(self, node): <1>
+    self.create_task('src2c', node)
+
+class src2c(Task.Task):
+    color = 'PINK'
+    quiet = True <2>
+    ext_out = ['.h'] <3>
+
+    def run(self):
+        cmd = '%s %s' % (self.env.COMP, self.inputs[0].abspath())
+        n = self.inputs[0].parent.get_bld()
+        n.mkdir()
+        cwd = n.abspath()
+        out = self.generator.bld.cmd_and_log(cmd, cwd=cwd, quiet=Context.STDOUT) <4>
+
+        out = Utils.to_list(out)
+        self.outputs = [self.generator.path.find_or_declare(x) for x in out]
+        self.generator.bld.raw_deps[self.uid()] = [self.signature()] + self.outputs <5>
+        self.add_c_tasks(self.outputs) <6>
+
+    def add_c_tasks(self, lst):
+        self.more_tasks = []
+        for node in lst:
+            if node.name.endswith('.h'):
+                continue
+            tsk = self.generator.create_compiled_task('c', node)
+            self.more_tasks.append(tsk) <7>
+
+            tsk.env.append_value('INCPATHS', [node.parent.abspath()])
+
+            if getattr(self.generator, 'link_task', None): <8>
+                self.generator.link_task.set_run_after(tsk)
+                self.generator.link_task.inputs.append(tsk.outputs[0])
+
+    def runnable_status(self):
+        ret = super(src2c, self).runnable_status()
+        if ret == Task.SKIP_ME:
+
+            lst = self.generator.bld.raw_deps[self.uid()]
+            if lst[0] != self.signature():
+                return Task.RUN_ME
+
+            nodes = lst[1:]
+            for x in nodes:
+                try:
+                    os.stat(x.abspath())
+                except:
+                    return Task.RUN_ME
+
+            nodes = lst[1:]
+            self.set_outputs(nodes)
+            self.add_c_tasks(nodes) <9>
+
+        return ret
+---------------
+
+<1> 処理はタスクに移譲される
+<2> タスクのアウトプットがない場合、警告を無効にする
+<3> _.h_ ファイルを使うタスクの前に処理が実行されるようにする
+<4> タスクが実行されたときに、生成されたファイル名を含んでいる、プロセスの標準出力を収集する
+<5> アウトプットファイルのノードを永続化キャッシュへ格納する
+<6> アウトプットをコンパイルするためにタスクを作る
+<7> Cタスクは現在のタスクが終わった後で処理される。これはCタスクが常に実行されるわけではないことを意味する
+<8> _src_ ファイルのタスクジェネレータがリンクタスクをもつならば、ビルド順序をセット
+<9> このタスクがスキップされたときに、強制的に動的なCタスクを作成
+
+アウトプットは次のようになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build build
+'distclean' finished successfully (0.006s)
+Setting top to  : /tmp/scenarios_unknown
+Setting out to  : /tmp/scenarios_unknown/build
+Checking for program gcc,cc              : /usr/bin/gcc
+Checking for program ar                  : /usr/bin/ar
+'configure' finished successfully (0.115s)
+Waf: Entering directory `/tmp/scenarios_unknown/build'
+[1/3] src2c: foo.src
+[2/5] c: build/shpip/a12.c -> build/shpip/a12.c.0.o
+[3/5] c: build/shpop/a13.c -> build/shpop/a13.c.0.o
+[4/5] c: x.c -> build/x.c.0.o
+[5/5] cstlib: build/x.c.0.o build/shpip/a12.c.0.o build/shpop/a13.c.0.o -> build/libastaticlib.a
+Waf: Leaving directory `/tmp/scenarios_unknown/build'
+'build' finished successfully (0.188s)
+Waf: Entering directory `/tmp/scenarios_unknown/build'
+Waf: Leaving directory `/tmp/scenarios_unknown/build'
+'build' finished successfully (0.013s)
+---------------
+

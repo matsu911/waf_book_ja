@@ -1,0 +1,785 @@
+== CとC++プロジェクト
+
+Wafは言語ニュートラルであるが、CとC++プロジェクトに非常によく使われる。
+この章ではこれらの言語に使われるWafツールと関数について述べる。
+
+=== C、C++、Dアプリケーションへの共通のスクリプト
+
+==== 前もって定義されたタスクジェネレータ
+
+C/C++のビルドはソースファイルをオブジェクトファイルに変換(コンパイル)すること、そして最後にオブジェクトファイルをアセンブル(リンク)することから構成される。 
+理論的には、単一のプログラミング言語でどんなアプリケーションを書くのにも十分であるべきだが、通常、状況はより複雑だ：
+
+. ソースファイルは他の言語で書かれたコンパイラ(IDL, ASN1など)から生成されることがある
+. 追加のファイルがリンクの段階で入ってくる(ライブラリ、オブジェクトファイル)ことがあるし、アプリケーションは動的もしくは静的ライブラリに分割されうる
+. 異なるプラットフォームでは異なる処理ルールが必要となる(MS-Windowsでのマニフェストファイルなど)
+
+実装の詳細を隠すこと、およびポータビリティーのため、次の例のようにそれぞれのターゲット(プログラム、ライブラリ)は単一のタスクジェネレータオブジェクトにラップすることができる：
+
+// cprog_wrappers
+[source,python]
+---------------
+def options(opt):
+	opt.load('compiler_c')
+
+def configure(conf):
+	conf.load('compiler_c') <1>
+
+def build(bld):
+	bld.program(source='main.c', target='app', use='myshlib mystlib') <2>
+	bld.stlib(source='a.c', target='mystlib') <3>
+	bld.shlib(source='b.c', target='myshlib', use='myobjects') <4>
+	bld.objects(source='c.c', target='myobjects')
+---------------
+
+<1> Cルーチンをロードしコンパイラを見つけるためにcompiler_cを使う(C++では 'compiler_cxx' 、D言語では 'compiler_d')
+<2> _main.c_ と他の2つのライブラリを使って実行ファイルを宣言
+<3> スタティックライブラリの宣言
+<4> 'myobjects' のオブジェクトファイルを使った共有ライブラリの宣言
+
+ターゲットはプラットフォームで異なる拡張子と名前を持つ。
+例えば、Linuxではビルドディレクトリの中身は：
+
+[source,shishell]
+---------------
+$ tree build
+build/
+|-- c4che
+|   |-- build.config.py
+|   `-- _cache.py
+|-- a.c.1.o
+|-- app <1>
+|-- b.c.2.o
+|-- c.c.3.o
+|-- config.log
+|-- libmyshlib.so <2>
+|-- libmystlib.a
+`-- main.c.0.o <3>
+---------------
+
+<1> 実行ファイルはLinuxでは拡張子をもたないが、Windowsでは '.exe'
+<2> 共有ライブラリの拡張子はLinuxでは '.so' 、Windowsでは '.dll'
+<3> '.o' オブジェクトファイルはオリジナルのファイル名とインデックスを使って複数コンパイルでのエラーを避ける
+
+ビルドコンテキストのメソッド _program_ 、 _shlib_ 、 _stlib_ と _objects_ は単一のタスクジェネレータとソースリストで検知された適切なフィーチャーを返す。
+例えば、ソースアトリビュートに _.c_ ファイルを持つプログラムでは、追加されるフィーチャーは _"c cprogram"_ で、 _d_ の静的ライブラリでは _"d dstlib"_ だ。
+
+==== 追加のアトリビュート
+
+前述のメソッドは単に 'use' 以外にも多くのアトリビュートを処理できる：
+
+[source,python]
+---------------
+def options(opt):
+	opt.load('compiler_c')
+
+def configure(conf):
+	conf.load('compiler_c')
+
+def build(bld):
+	bld.program(
+		source       = 'main.c', <1>
+		target       = 'appname', <2>
+		features     = ['more', 'features'], <3>
+
+		includes     = ['.'], <4>
+		defines      = ['LINUX=1', 'BIDULE'],
+
+		lib          = ['m'], <5>
+		libpath      = ['/usr/lib'],
+		stlib        = ['dl'], <6>
+		stlibpath    = ['/usr/local/lib'],
+		linkflags    = ['-g'], <7>
+		rpath        = ['/opt/kde/lib'] <8>
+		vnum         = '1.2.3',
+
+		install_path = '${SOME_PATH}/bin', <9>
+		cflags       = ['-O2', '-Wall'], <10>
+		cxxflags     = ['-O3'],
+		dflags       = ['-g'],
+	)
+---------------
+
+<1> ソースファイルのリスト
+<2> ターゲット。プラットフォームやタイプに応じて自動的に +target.exe+ や +libtarget.so+ に変換される
+<3> 追加するフィーチャー(Cのファイルからなるプログラムの場合、デフォルトは _'c cprogram'_)
+<4> includeとdefine
+<5> 共有ライブラリと共有ライブラリのリンクパス
+<6> 静的ライブラリとリンクパス
+<7> 特定のリンクフラグのためにlinkflagsを使う(ライブラリには適用されない)
+<8> rpathとvnum。これらをサポートしないプラットフォームでは無視される
+<9> プログラムと共有ライブラリはデフォルトでインストールされる。インストールを無効にするにはNoneにセット
+<10> フラグをサポートするソースファイルに適用されるさまざまなフラグ(もし存在するならば)
+
+=== includeの処理
+
+==== 実行パスとフラグ
+
+インクルードパスはヘッダを探すためにC/C++コンパイラによって使われる。
+ヘッダが変更されると、ファイルは自動的に再コンパイルされる。
+例えば次のような構成のプロジェクトでは：
+
+[source,shishell]
+---------------
+$ tree
+.
+|-- foo.h
+|-- src
+|   |-- main.c
+|   `-- wscript
+`-- wscript
+---------------
+
+ファイル 'src/wscript' は次のコードを含む：
+
+[source,python]
+---------------
+def build(bld):
+    bld.program(
+        source   = 'main.c',
+        target   = 'myapp',
+        includes = '.. .')
+---------------
+
+コマンドライン(`waf -v` のアウトプット)は次のようになる：
+
+[source,shishell]
+---------------
+cc -I. -I.. -Isrc -I../src ../src/main.c -c -o src/main_1.o
+---------------
+
+コマンドはビルドディレクトリから実行されるため、フォルダは次のようにインクルードフラグに変換される：
+
+[source,shishell]
+---------------
+.. -> -I..      -I.
+.  -> -I../src  -Isrc
+---------------
+
+覚えておくべき重要な点がいくつかある：
+
+. インクルードは常にwscriptファイルを含むディレクトリからの相対パスで与えられる
+. インクルードはタスクジェネレータバリアントのためにソースディレクトリと対応するビルドディレクトリを追加する
+. コマンドはビルドディレクトリから実行されるため、インクルードパスは変換されなくてはならない
+. システムのインクルードパスはconfigure中に定義されINCLUDES変数に追加される(uselib)
+
+==== Wafプリプロセッサ
+
+Wafはヘッダの依存関係を追加するためにPythonで書かれたプリプロセッサを使う。
+#include文を見るだけの単純なパーサでは次のような構造を見逃がしてしまう：
+
+[source,c]
+---------------
+#define mymacro "foo.h"
+#include mymacro
+---------------
+
+依存関係を見つけるためにコンパイラを使うのはQtのようなファイル処理を必要とするアプリケーションではうまくいかない。
+Qtでは、拡張子 '.moc' の特別なインクルードファイルをビルドシステムが検知し、前もって生成しなくてはならない。
+Cコンパイラはそのようなファイルをパースできない。
+
+[source,c]
+---------------
+#include "foo.moc"
+---------------
+
+デフォルトではシステムのヘッダは追跡されないため、Wafのプリプロセッサは次のように書かれた依存関係を見逃すかもしれない：
+
+[source,c]
+---------------
+#if SOMEMACRO
+	/* an include in the project */
+	#include "foo.h"
+#endif
+---------------
+
+ポータブルでデバッグしやすいコードにするために、プロジェクトで使われるすべての条件を 'config.h' ファイルに書き出すことを強く推奨する。
+
+[source,python]
+---------------
+def configure(conf):
+	conf.check(
+		fragment    = 'int main() { return 0; }\n',
+		define_name = 'FOO',
+		mandatory   = True)
+	conf.write_config_header('config.h')
+---------------
+
+パフォーマンス上の理由から、デフォルトではシステムのヘッダの暗黙の依存関係は無視される。
+次のコードはこれを有効にするために使われる：
+
+[source,python]
+---------------
+from waflib import c_preproc
+c_preproc.go_absolute = True
+---------------
+
+http://code.google.com/p/waf/source/browse/trunk/waflib/extras/gccdeps.py[gccdeps] や http://code.google.com/p/waf/source/browse/trunk/waflib/extras/dumbpreproc.py[dumbpreproc] などのツールは代替的な依存関係のスキャナを提供し、あるケース(boost)においてより高速だ。
+
+備考: Wafエンジンはタスクがコンパイルに必要なヘッダを生成しビルド順序を計算するか否かを検知する。ヘッダを生成するタスクがヒント 'ext_out=[".h"]' を提供するならばスキャナのパフォーマンスが改善されることもある
+
+==== 依存関係のデバッグ
+
+Wafプリプロセッサは特定のデバッグゾーンを含む：
+
+[source,shishell]
+---------------
+$ waf --zones=preproc
+---------------
+
+獲得したもしくは見逃された依存関係を表示するには、次を使う：
+
+[source,shishell]
+---------------
+$ waf --zones=deps
+
+23:53:21 deps deps for src:///comp/waf/demos/qt4/src/window.cpp: <1>
+  [src:///comp/waf/demos/qt4/src/window.h, bld:///comp/waf/demos/qt4/src/window.moc]; <2>
+  unresolved ['QtGui', 'QGLWidget', 'QWidget'] <3>
+---------------
+
+<1> プリプロセスされたファイル
+<2> 見つかったヘッダ
+<3> 廃棄されたシステムヘッダ
+
+依存関係の計算はファイルが最新ではないときにのみ行われ、これらのコマンドはコンパイルすべきファイルが存在するときにのみ表示を行う。
+
+備考: スキャナはCファイルや依存関係が変化したときにのみ呼ばれる。 コンパイルが成功した後でヘッダを追加するまれなケースでは、フルスキャンを強制的に行うために 'waf clean build' を実行する必要があるかもしれない
+
+=== ライブラリの相互作用(use)
+
+==== ローカルライブラリ
+
+アトリビュート 'use' は(静的もしくは共有)ライブラリとのリンクを有効にし、参照されるタスクジェネレータがライブラリでない場合、オブジェクトファイルを含めることを有効にする。
+
+// cprog_use
+[source,python]
+---------------
+def build(bld):
+	bld.stlib(
+		source   = 'test_staticlib.c',
+		target   = 'mylib',
+		name     = 'stlib1') <1>
+
+	bld.program(
+		source   = 'main.c',
+		target   = 'app',
+		includes = '.',
+		use      = ['stlib1']) <2>
+---------------
+
+<1> nameアトリビュートは正確に一つのタスクジェネレータを指し示さなくてはならない
+<2> アトリビュート 'use' は使うタスクジェネレータの名前を含む
+
+この例では、'mylib' が変更されるとファイル 'app' は再度生成される(順序と依存関係)。
+タスクジェネレータの名前を使うことで、実行形式とライブラリの宣言はどのような順序で行ってもよい。
+利便性のために、名前は定義する必要はなく、ターゲットの名前から前もってセットされる：
+
+[source,python]
+---------------
+def build(bld):
+	bld.stlib(
+		source   = 'test_staticlib.c',
+		target   = 'mylib')
+
+	bld.program(
+		source   = 'main.c',
+		target   = 'app',
+		includes = '.',
+		use      = ['mylib'])
+---------------
+
+また、 'use' は再帰的な振舞いの処理を禁止している。
+これを次の例で示そう：
+
+// cprog_propagation
+[source,python]
+---------------
+def build(bld):
+	bld.shlib(
+		source = 'a.c', <1>
+		target = 'lib1')
+
+	bld.stlib(
+		source = 'b.c',
+		use    = 'cshlib', <2>
+		target = 'lib2')
+
+	bld.shlib(
+		source = 'c.c',
+		target = 'lib3',
+		use    = 'lib1 lib2') <3>
+
+	bld.program( <4>
+		source = 'main.c',
+		target = 'app',
+		use    = 'lib3')
+---------------
+
+<1> 単純な共有ライブラリ
+<2> 'cshlib' フラグはライブラリと実行形式両方に伝搬する。 footnote:[伝搬を防ぐには http://code.google.com/p/waf/source/browse/trunk/docs/book/examples/cprog_propagation/wscript を参照]
+<3> 'lib3' は共有ライブラリと静的ライブラリを使う
+<4> 実行形式は 'lib3' を使う
+
+共有ライブラリの依存関係 'lib1' → 'lib2' のため、実行形式 'app' は 'lib1' と 'lib3' に対してリンクされるが、 'lib2' に対してはリンクされない：
+
+[source,shishell]
+---------------
+$ waf -v
+'clean' finished successfully (0.004s)
+Waf: Entering directory `/tmp/cprog_propagation/build'
+[1/8] c: a.c -> build/a.c.0.o
+12:36:17 runner ['/usr/bin/gcc', '-fPIC', '../a.c', '-c', '-o', 'a.c.0.o']
+[2/8] c: b.c -> build/b.c.1.o
+12:36:17 runner ['/usr/bin/gcc', '../b.c', '-c', '-o', 'b.c.1.o']
+[3/8] c: c.c -> build/c.c.2.o
+12:36:17 runner ['/usr/bin/gcc', '-fPIC', '../c.c', '-c', '-o', 'c.c.2.o']
+[4/8] c: main.c -> build/main.c.3.o
+12:36:17 runner ['/usr/bin/gcc', '../main.c', '-c', '-o', 'main.c.3.o']
+[5/8] cstlib: build/b.c.1.o -> build/liblib2.a
+12:36:17 runner ['/usr/bin/ar', 'rcs', 'liblib2.a', 'b.c.1.o']
+[6/8] cshlib: build/a.c.0.o -> build/liblib1.so
+12:36:17 runner ['/usr/bin/gcc', 'a.c.0.o', '-o', 'liblib1.so', '-shared']
+[7/8] cshlib: build/c.c.2.o -> build/liblib3.so
+12:36:17 runner ['/usr/bin/gcc', 'c.c.2.o', '-o', 'liblib3.so', '-Wl,-Bstatic', '-L.', '-llib2', '-Wl,-Bdynamic', '-L.', '-llib1', '-shared']
+[8/8] cprogram: build/main.c.3.o -> build/app
+12:36:17 runner ['/usr/bin/gcc', 'main.c.3.o', '-o', 'app', '-Wl,-Bdynamic', '-L.', '-llib1', '-llib3']
+Waf: Leaving directory `/tmp/cprog_propagation/build'
+'build' finished successfully (0.144s)
+---------------
+
+'use' アトリビュートの最も重要な点をまとめると：
+
+. タスクジェネレータを異なるファイルにどのような順序でも作ることができるが、'use' アトリビュートのためにユニークな名前をつけなくてはならない
+. 'use' の処理は必要なすべてのタスジクジェネレータに対して再帰的に処理するが、追加されたフラグはターゲットの種類(共有/静的ライブラリ)に依存する
+
+==== 特別なローカルライブラリ
+
+===== includeフォルダ
+
+useキーワードは実際にはターゲットを宣言しない特別なライブラリ指定することができる。
+例えば、ヘッダのみのライブラリは複数のターゲットに対して共通のインクルードパスを追加することで使われる：
+
+// cprog_incdirs
+[source,python]
+---------------
+def build(bld):
+	bld(
+		includes        = '. src',
+		export_includes = 'src', <1>
+		name            = 'com_includes')
+
+	bld.stlib(
+		source          = 'a.c',
+		target          = 'shlib1',
+		use             = 'com_includes') <2>
+
+	bld.program(
+		source          = 'main.c',
+		target          = 'app',
+		use             = 'shlib1', <3>
+		)
+---------------
+
+<1> 'includes' アトリビュートはプライベートであるが、 'export_includes' は他のタスクジェネレータによって使われる
+<2> パスは他のタスクジェネレータに対する相対パスとして追加される
+<3> 'export_includes' は他のタスクジェネレータにも伝搬する
+
+===== オブジェクトファイル
+
+これは特定のファイルに対して特別なコンパイルフラグを有効にする方法だ：
+
+// cprog_objects
+[source,python]
+---------------
+def build(bld):
+	bld.objects( <1>
+		source  = 'test.c',
+		cflags  = '-O3',
+		target  = 'my_objs')
+
+	bld.shlib(
+		source  = 'a.c',
+		cflags  = '-O2', <2>
+		target  = 'lib1',
+		use     = 'my_objs') <3>
+
+	bld.program(
+		source  = 'main.c',
+		target  = 'test_c_program',
+		use     = 'lib1') <4>
+---------------
+
+<1> ファイルはCモードでコンパイルされるが、実行形式もライブラリも生成されない
+<2> 異なるコンパイルフラグが使われる
+<3> オブジェクトは自動的にリンクステージで追加される
+<4> シンボルの重複エラーを回避するために、オブジェクトは他の実行形式やライブラリには伝搬しない
+
+警告: 静的ライブラリのように、オブジェクトファイルはバイナリコードをコピーアンドペーストするために乱用されがちだ。可能ならば常に共有ライブラリを使うことで実行ファイルのサイズを最小化しよう。
+
+===== フェイクライブラリ
+
+ローカルライブラリは変更されると再コンパイルをトリガーする。
+メソッド 'read_shlib' と 'read_stlib' はこの振舞いを外部のライブラリやプロジェクトに存在するバイナリファイルに追加するために使うことができる。
+
+// cprog_fakelibs
+[source,python]
+---------------
+def build(bld):
+	bld.read_shlib('m', paths=['.', '/usr/lib64'])
+	bld.program(source='main.c', target='app', use='m')
+---------------
+
+このメソッドは必要なパスと依存関係を計算するために、指定されたパスにある 'libm.so' や 'libm.dll' のようなファイルを探す。
+この例では、 '/usr/lib64/libm.so' が変更されるとターゲット 'app' は再度生成される。 
+ローカルで宣言された共有ライブラリや静的ライブラリのように、これらのライブラリはタスクジェネレータ間を伝搬する。
+
+==== 外部ライブラリとフラグ
+
+アトリビュート 'use' の要素がローカルライブラリにマッチしない場合、システムライブラリを表現し、必要なフラグはコンフィギュレーションセット 'env' に存在することが想定される。
+このシステムは、次の例のように、いくつかのコンパイルフラグとリンクフラグを一度に追加する：
+
+// cprog_system
+[source,python]
+---------------
+import sys
+
+def options(opt):
+	opt.load('compiler_c')
+
+def configure(conf):
+	conf.load('compiler_c')
+	conf.env.INCLUDES_TEST      = ['/usr/include'] <1>
+
+	if sys.platform != 'win32': <2>
+		conf.env.DEFINES_TEST   = ['TEST']
+		conf.env.CFLAGS_TEST   = ['-O0'] <3>
+		conf.env.LIB_TEST       = ['m']
+		conf.env.LIBPATH_TEST   = ['/usr/lib']
+		conf.env.LINKFLAGS_TEST = ['-g']
+		conf.env.INCLUDES_TEST  = ['/opt/gnome/include']
+
+def build(bld):
+	mylib = bld.stlib(
+		source   = 'test_staticlib.c',
+		target   = 'teststaticlib',
+		use      = 'TEST') <4>
+
+	if mylib.env.CC_NAME == 'gcc':
+		mylib.cxxflags = ['-O2'] <5>
+---------------
+
+<1> 移植性の理由から、-I/includeのような形態でフラグを与える替わりにINCLUDESを使うことが推奨される。INCLUDESはCとC++両方から使われることに注意
+<2> プラットフォーム固有の設定でundefinedとなりうる変数。しかしながらビルドスクリプトは同一のままだ。
+<3> configureでいくつかの変数を宣言する。変数はVAR_NAMEの慣習に従う
+<4> _use variable_ NAMEに対応するすべてのVAR_NAMEを追加。この例では 'TEST'
+<5> '避けるべきモデル': フラグの設定およびconfigureのチェックはconfigureセクションで行われるべきだ
+
+C/C++のための変数は次のようになる：
+
+.C/C++用の変数とタスクジェネレータのアトリビュートの使用
+[options="header",cols="1,1,3"]
+|=================
+|Uselib変数 | アトリビュート | 用法
+|LIB      |lib      | プレフィックスや拡張子のついていない使用する共有ライブラリ名のリスト
+|LIBPATH  |libpath  | 共有ライラリのサーチパスのリスト
+|STLIB    |stlib    | プレフィックスや拡張子のついていない使用する静的ライブラリ名のリスト
+|STLIBPATH|stlibpath| 静的ライブラリのサーチパスのリスト
+|LINKFLAGS|linkflags| リンクフラグのリスト(可能ならば他の変数を使った方がよい)
+|RPATH    |rpath    | リンク時にバイナリにハードコードされるパスのリスト
+|CFLAGS   |cflags   | Cファイル用のコンパイルフラグのリスト
+|CXXFLAGS |cxxflags | C++ファイル用のコンパイルフラグのリスト
+|DFLAGS   |dflags   | D言語用のコンパイルフラグのリスト
+|INCLUDES |includes | インクルードパス
+|CXXDEPS  |         | 変更されたときにC++の再コンパイルをトリガーする変数/リスト
+|CCDEPS   |         | 変更されたときにCの再コンパイルをトリガーする変数/リスト
+|LINKDEPS |         | 変更されたときに再リンクをトリガーする変数/リスト
+|DEFINES  |defines  | defineのリスト in the form [`key=value', ...]
+|FRAMEWORK|framework| 使用するフレームワークのリスト
+|FRAMEWORKPATH|frameworkpath| 使用するフレームワークへのパスのリスト
+|ARCH     |arch     | アーキテクチャのリスト in the form ['ppc', 'x86']
+|=================
+
+後の使用のために変数を空にすることができるが、エラーは起こらない。
+開発中は、異なるconfigureを試すために、プロジェクト全体の再configureをすることなくコンフィギュレーションキャッシュファイル(例えば、_cache.py)をテキストエディタから変更することができるが、影響を受けるファイルはリビルドされる。
+
+=== configureのヘルパ
+
+==== コンフィギュレーションテスト
+
+メソッド 'check' は小さなビルドプロジェクトを使うパラメータの検知に使われる。
+主なパラメータは次のようになる
+
+. msg: 実行するテストのタイトル
+. okmsg: テストが成功したときに表示するメッセージ
+. errmsg: テストが失敗したときに表示するメッセージ
+. env: ビルドのために使用する環境(conf.envはデフォルトで使われる)
+. compile_mode: 'cc' もしくは 'cxx'
+. define_name: テストが成功ときにコンフィギュレーションヘッダ用のdefineを追加(ほとんどの場合、自動的に計算される)
+
+発生する例外は 'waflib.Errors.ConfigurationError' のインスタンスだ。
+リターンコードはない。
+
+主要なパラメータの他に、C/C++のタスクジェネレータのアトリビュートが使われる。
+ここに完全な例を示す：
+
+// cprog_conf
+[source,python]
+---------------
+def configure(conf):
+
+	conf.check(header_name='time.h', features='c cprogram') <1>
+	conf.check_cc(function_name='printf', header_name="stdio.h", mandatory=False) <2>
+	conf.check_cc(fragment='int main() {2+2==4;}\n', define_name="boobah") <3>
+	conf.check_cc(lib='m', cflags='-Wall', defines=['var=foo', 'x=y'],
+		uselib_store='M') <4>
+	conf.check_cxx(lib='linux', use='M', cxxflags='-O2') <5>
+
+	conf.check_cc(fragment='''
+			#include <stdio.h>
+			int main() { printf("4"); return 0; } ''',
+		define_name = "booeah",
+		execute     = True,
+		define_ret  = True,
+		msg         = "Checking for something") <6>
+
+	conf.check(features='c', fragment='int main(){return 0;}') <7>
+
+	conf.write_config_header('config.h') <8>
+---------------
+
+<1> システムに存在するならば、コンフィギュレーションヘッダtime.hを用いてコンパイルを試行し、テストが成功すればdefine HAVE_TIME_Hが追加される
+<2> ヘッダstdio.hを追加し関数printfを使ってコンパイルを試行(header_nameは追加されるヘッダのリストでもよい)。デフォルトですべてのコンフィギュレーションテストが必要で(@confメソッド)、コンフィギュレーション例外を発生する。隠すためにはアトリビュート 'mandatory' をFalseにセット。
+<3> コードの断片のコンパイルを試行し、テストが成功すればboobahが定義される
+<4> タスクジェネレータ環境への変更は保存されない。テストが成功しアトリビュートuselib_storeが与えられているとき、lib、cflagsとdefinesは_use variables_ LIB_MとCFLAGS_M、DEFINES_Mに変換され、フラグの値はコンフィギュレーション環境に追加される。
+<5> 'linux' と呼ばれるライブラリに対して単純なCのプログラムのコンパイルを試行し、 _use_ でlibm用のパラメータを再利用する
+<6> 単純なプログラムを実行し、成功したらアウトプットを収集してdefineにつっこむ
+<7> 単一のタスクジェネレータによってテストがビルドを作る。 'features' アトリビュートを直接渡すことでコンパイルを無効にしたり、より複雑なコンフィギュレーションテストを作ることができる。
+<8> すべてのテストが実行された後で、コンフィギュレーションヘッダをビルドディレクトリに書き出す(optional)。コンフィギュレーションヘッダはコマンドラインのサイズを制限するために使われる。
+
+ここに前掲のテストコードによって生成された +config.h+ の例を示す：
+
+[source,c]
+---------------
+/* Configuration header created by Waf - do not edit */
+#ifndef _CONFIG_H_WAF
+#define _CONFIG_H_WAF
+
+#define HAVE_PRINTF 1
+#define HAVE_TIME_H 1
+#define boobah 1
+#define booeah "4"
+
+#endif /* _CONFIG_H_WAF */
+---------------
+
+ファイル +_cache.py+ は次の変数を含む：
+
+[source,python]
+---------------
+DEFINES_M = ['var=foo', 'x=y']
+CXXFLAGS_M = ['-Wall']
+CFLAGS_M = ['-Wall']
+LIB_M = ['m']
+boobah = 1
+booeah = '4'
+defines = {'booeah': '"4"', 'boobah': 1, 'HAVE_TIME_H': 1, 'HAVE_PRINTF': 1}
+dep_files = ['config.h']
+waf_config_files = ['/compilation/waf/demos/adv/build/config.h']
+---------------
+
+==== アドバンステスト
+
+メソッド 'conf.check' はビルドコンテキストとタスクジェネレータを内部的に作る。これはアトリビュート 'includes' 、 'defines' 、 'cxxflags' が使われうることを意味する(これですべてではない)。
+アドバンステストはフィーチャー引数を渡すことによって作られる：
+
+// cprog_cfg_advanced
+[source,python]
+---------------
+from waflib.TaskGen import feature, before_method
+
+@feature('special_test')
+@before_method('process_source')
+def my_special_test(self):
+	self.bld(rule='touch ${TGT}', target='foo') <1>
+	self.bld(rule='cp ${SRC} ${TGT}', source='foo', target='bar')
+	self.source = [] <2>
+
+def configure(conf):
+	conf.check_cc(features='special_test', msg='my test!') <3>
+---------------
+
+<1> 別のタスクジェネレータからタスクジェネレータを生成
+<2> +test.c+ sourceに空のリストをセットすることで +test.c+ のコンパイルを無効にする
+<3> special_testフィーチャーを使う
+
+==== コンフィギュレーションヘッダの作成
+
+大量のdefineの値をコマンドラインに追加すると、コマンドラインのサイズが増加し有用な情報が隠される(differences)。
+いくつかのプロジェクトはconfigureで生成されたヘッダを使い、それらはビルド中に変更されないしインストールも再頒布もされない。
+このシステムは巨大なプロジェクトに有効で、autoconfに基づいたプロジェクトで一般的だ。
+
+コンフィギュレーションヘッダの書き出しは次のメソッドを使うことで行える：
+
+[source,python]
+---------------
+def configure(conf):
+	conf.define('NOLIBF', 1)
+	conf.undefine('NOLIBF')
+	conf.define('LIBF', 1)
+	conf.define('LIBF_VERSION', '1.0.2')
+	conf.write_config_header('config.h')
+---------------
+
+このコードスニペットはビルドディレクトリに次のように 'config.h' を生成する：
+
+[source,shishell]
+---------------
+build/
+|-- c4che
+|   |-- build.config.py
+|   `-- _cache.py
+|-- config.log
+`-- config.h
+---------------
+
+この例のconfig.hの中身は:
+
+[source,c]
+---------------
+/* Configuration header created by Waf - do not edit */
+#ifndef _CONFIG_H_WAF
+#define _CONFIG_H_WAF
+
+/* #undef NOLIBF */
+#define LIBF 1
+#define LIBF_VERSION "1.0.2"
+
+#endif /* _CONFIG_H_WAF */
+---------------
+
+備考: デフォルトでは、defineはコマンドラインからコンフィギュレーションヘッダに移動する。これはオペレーションによってアトリビュート _conf.env.DEFINE_ が作られることを意味する。この振舞いを阻止するには、 'conf.write_config_header(remove=False)' を使う
+
+==== Pkg-config
+
+依存するすべてのプロジェクトのコンフィギュレーションを検出する替わりに、コンフィギュレーションファイルはライブラリがインストールされたときに書き出される。
+(データベースやAPIに問い合せることのできない)Makeに基づいたビルドシステムとのインタラクションを簡単にするために、キャッシュファイルを読み込み、 http://pkg-config.freedesktop.org/wiki/[pkg-config] やwx-config、sdl-configなどのパラメータ(伝統的に '-config' で終わる名前)を解釈するために小さなアプリケーションが作られた。
+
+メソッド 'check_cfg' はこれらのアプリケーションとのインタラクションを簡単にするために提供されている。
+ここにいくつかの例を示す：
+
+// cprog_pkgconfig
+[source,python]
+---------------
+def options(opt):
+	opt.load('compiler_c')
+
+def configure(conf):
+	conf.load('compiler_c')
+
+	conf.check_cfg(atleast_pkgconfig_version='0.0.0') <1>
+	pango_version = conf.check_cfg(modversion='pango') <2>
+
+	conf.check_cfg(package='pango') <3>
+	conf.check_cfg(package='pango', uselib_store='MYPANGO',
+		args=['--cflags', '--libs']) <4>
+
+	conf.check_cfg(package='pango', <5>
+		args=['pango >= 0.1.0', 'pango < 9.9.9', '--cflags', '--libs'],
+		msg="Checking for 'pango 0.1.0'") <6>
+
+	conf.check_cfg(path='sdl-config', args='--cflags --libs',
+		package='', uselib_store='SDL') <7>
+	conf.check_cfg(path='mpicc', args='--showme:compile --showme:link',
+		package='', uselib_store='OPEN_MPI', mandatory=False) <8>
+---------------
+
+<1> pkg-configのバージョンをチェック
+<2> パッケージ向のモジュールのバージョンを文字列として検索。エラーがないならば、 'PANGO_VERSION' が定義される。アトリビュート _uselib_store='MYPANGO'_ によって上書きできる。
+<3> pangoパッケージが存在するか否かをチェックし、 _HAVE_PANGO_ を定義する(パッケージ名から自動的に計算される)
+<4> _HAVE_MYPANGO_ を定義すると伴に, 関係するフラグを抽出し _use variable_ MYPANGO (_LIB_MYPANGO_, _LIBPATH_MYPANGO_ など)に格納する
+<5> 前のテストと同様だが、特定のバージョン番号を強制するためのpkg-config節を追加
+<6> アウトプットにカスタムのメッセージを表示。アトリビュート 'okmsg' と 'errmsg' はそれぞれ成功および失敗したときに表示するメッセージを表す
+<7> sdl-config向けのフラグを取得。この例はwx-configやpcre-configなどの他のコンフィギュレーションプログラムにも適用できる
+<8> 実行されるプログラムが見つからないときや終了ステータスがゼロでないときに発生するコンフィギュレーションエラーを抑制する
+
+フラグが大量で、アプリケーション間のコンフィグに標準が欠けており、コンパイラ依存のフラグ(gccでは -I、msvcでは /I)のため、pkg-configのアウトプットは対応する _use variables_ を設定する前にパースされる。
+Wafモジュールc_config.pyの関数 'parse_flags(line, uselib, env)' はフラグの抽出を行う。
+
+アウトプットはビルドディレクトリのファイル 'config.log' に書き出される：
+
+[source,shishell]
+------------------
+# project  configured on Tue Aug 31 17:30:21 2010 by
+# waf 1.6.10 (abi 98, python 20605f0 on linux2)
+# using /home/waf/bin/waf configure
+#
+---
+Setting top to
+/disk/comp/waf/docs/book/examples/cprog_pkgconfig
+---
+Setting out to
+/disk/comp/waf/docs/book/examples/cprog_pkgconfig/build
+---
+Checking for program pkg-config
+/usr/bin/pkg-config
+find program=['pkg-config'] paths=['/usr/local/bin', '/usr/bin'] var='PKGCONFIG' -> '/usr/bin/pkg-config'
+---
+Checking for pkg-config version >= 0.0.0
+['/usr/bin/pkg-config', '--atleast-pkgconfig-version=0.0.0']
+yes
+['/usr/bin/pkg-config', '--modversion', 'pango']
+out: 1.28.0
+
+---
+Checking for pango
+['/usr/bin/pkg-config', 'pango']
+yes
+---
+Checking for pango
+['/usr/bin/pkg-config', 'pango']
+yes
+---
+Checking for pango 0.1.0
+['/usr/bin/pkg-config', 'pango >= 0.1.0', 'pango < 9.9.9', '--cflags', '--libs', 'pango']
+out: -pthread -I/usr/include/pango-1.0 -I/usr/include/glib-2.0 -I/usr/lib64/glib-2.0/include
+     -pthread -lpango-1.0 -lgobject-2.0 -lgmodule-2.0 -lgthread-2.0 -lrt -lglib-2.0
+
+yes
+---
+Checking for sdl-config
+['sdl-config', '--cflags', '--libs']
+out: -I/usr/include/SDL -D_GNU_SOURCE=1 -D_REENTRANT
+-L/usr/lib64 -lSDL -lpthread
+
+yes
+---
+Checking for mpicc
+['mpicc', '--showme:compile', '--showme:link']
+out: -pthread libtool: link: -pthread -L/usr/lib64 -llammpio -llamf77mpi -lmpi -llam -lutil -ldl
+------------------
+
+そのようなconfigureの後、コンフィギュレーションセットの中身は次と似たようなものになる：
+
+[source,python]
+---------------
+'CFLAGS_OPEN_MPI' ['-pthread']
+'CFLAGS_PANGO' ['-pthread']
+'CXXFLAGS_OPEN_MPI' ['-pthread']
+'CXXFLAGS_PANGO' ['-pthread']
+'DEFINES' ['HAVE_PANGO=1', 'HAVE_MYPANGO=1', 'HAVE_SDL=1', 'HAVE_OPEN_MPI=1']
+'DEFINES_SDL' ['_GNU_SOURCE=1', '_REENTRANT']
+'INCLUDES_PANGO' ['/usr/include/pango-1.0', '/usr/include/glib-2.0', '/usr/lib64/glib-2.0/include']
+'INCLUDES_SDL' ['/usr/include/SDL']
+'LIBPATH_OPEN_MPI' ['/usr/lib64']
+'LIBPATH_SDL' ['/usr/lib64']
+'LIB_OPEN_MPI' ['lammpio', 'lamf77mpi', 'mpi', 'lam', 'util', 'dl']
+'LIB_PANGO' ['pango-1.0', 'gobject-2.0', 'gmodule-2.0', 'gthread-2.0', 'rt', 'glib-2.0']
+'LIB_SDL' ['SDL', 'pthread']
+'LINKFLAGS_OPEN_MPI' ['-pthread']
+'LINKFLAGS_PANGO' ['-pthread']
+'PKGCONFIG' '/usr/bin/pkg-config'
+'PREFIX' '/usr/local'
+'define_key' ['HAVE_PANGO', 'HAVE_MYPANGO', 'HAVE_SDL', 'HAVE_OPEN_MPI']
+---------------
+

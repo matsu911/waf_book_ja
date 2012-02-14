@@ -1,0 +1,495 @@
+== プロジェクトコンフィギュレーション
+
+_configuration_ コマンドはプロジェクトが要求するものを満しているかチェックし、その情報を格納するために使われる。
+buildコマンドのような他のコマンドで使われるパラメータが格納される。
+
+=== 永続データの使用
+
+==== ビルドとのデータの共有
+
+コンフィギュレーションコンテキストはビルドフェーズにおいて再利用することができるデータを格納するために使われる。
+次の例から始めよう：
+
+// configuration_build
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def options(ctx):
+	ctx.add_option('--foo', action='store', default=False, help='Silly test')
+
+def configure(ctx):
+	ctx.env.FOO = ctx.options.foo <1>
+	ctx.find_program('touch', var='TOUCH') <2>
+
+def build(bld):
+	print(bld.env.TOUCH)
+	print(bld.env.FOO) <3>
+	bld(rule='${TOUCH} ${TGT}', target='foo.txt') <4>
+---------------
+
+<1> _env_ 変数(dictに似た構造)にオプション _foo_ を格納
+<2> プログラム _touch_ を探して _ctx.env.TOUCH_ に格納するためのコンフィギュレーションルーチン footnote:['find_program' は探索中にOSの環境と同じ変数を使うことができる、たとえば 'CC=gcc waf configure']
+<3> configureでセットされた _ctx.env.FOO_ の値を表示
+<4> 変数 _$\{TOUCH}_ は _ctx.env.TOUCH_ に対応
+
+実行結果：
+
+[source,shishell]
+---------------
+$ waf distclean configure build --foo=abcd -v
+'distclean' finished successfully (0.005s)
+Checking for program touch               : /usr/bin/touch <1>
+'configure' finished successfully (0.007s)
+Waf: Entering directory `/tmp/configuration_build/build'
+/usr/bin/touch <2>
+abcd
+[1/1] foo.txt:  -> build/foo.txt
+10:56:41 runner '/usr/bin/touch foo.txt' <3>
+Waf: Leaving directory `/tmp/configuration_build/build'
+'build' finished successfully (0.021s)
+---------------
+<1> コンフィギュレーションテスト _find_program_ のアウトプット
+<2> _TOUCH_ の値
+<3> ターゲット 'foo.txt' を作成するためのコマンドライン
+
+変数 _ctx.env_ は *コンフィギュレーションセット* と呼ばれ、 'ConfigSet' クラスのインスタンスだ。
+このクラスはPythonのdictをラップし、シリアライズ処理をする。
+そのため、(関数やクラスではない)単純な値に対してのみ使われる
+値はPythonに似たフォーマットでビルドディレクトリに格納される：
+
+[source,shishell]
+---------------
+$ tree
+build/
+|-- foo.txt
+|-- c4che
+|   |-- build.config.py
+|   `-- _cache.py
+`-- config.log
+
+$ cat build/c4che/_cache.py
+FOO = 'abcd'
+PREFIX = '/usr/local'
+TOUCH = '/usr/bin/touch'
+---------------
+
+備考: _ctx.env_ への値の読み書きはconfigureおよびbuildコマンドにおいて可能であるが、コンフィギュレーションフェーズにおいてのみ、値はファイルに格納される。
+
+==== コンフィギュレーションセットの使い方
+
+ここでコンフィギュレーションセットの使い方に関するより多くの例を提供する。
+オブジェクト *ctx.env* はその中身にアクセスするための便利なメソッドを提供している：
+
+// configuration_sets
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	ctx.env['CFLAGS'] = ['-g'] <1>
+	ctx.env.CFLAGS = ['-g'] <2>
+	ctx.env.append_value('CXXFLAGS', ['-O2', '-g']) <3>
+	ctx.env.append_unique('CFLAGS', ['-g', '-O2'])
+	ctx.env.prepend_value('CFLAGS', ['-O3']) <4>
+
+	print(type(ctx.env))
+	print(ctx.env)
+	print(ctx.env.FOO)
+----------------
+
+<1> キーに基づいたアクセス; リストを格納
+<2> アトリビュートに基づいたアクセス(2つの形態は等価)
+<3> それぞれの要素をリスト _ctx.env.CXXFLAGS_ に追加。リストであることを想定
+<4> 先頭に値を挿入。 _prepend_unique_ のようなメソッドは存在しないので注意
+
+実行すると次のアウトプットが生成される：
+
+[source,shishell]
+---------------
+$ waf configure
+<class 'waflib.ConfigSet.ConfigSet'> <1>
+'CFLAGS' ['-O3', '-g', '-O2'] <2>
+'CXXFLAGS' ['-O2', '-g']
+'PREFIX' '/usr/local'
+[] <3>
+
+$ cat build/c4che/_cache.py <4>
+CFLAGS = ['-O3', '-g', '-O2']
+CXXFLAGS = ['-O2', '-g']
+PREFIX = '/usr/local'
+---------------
+
+<1> オブジェクト _conf.env_ は _waflib/ConfigSet.py_ で定義されているConfigSetクラスのインスタンス
+<2> 変更後の _conf.env_ の内容
+<3> キーが未定義の場合、これはリストであることが想定されている(上記の *append_value* で使われている)
+<4> オブジェクト _conf.env_ はデフォルトでこのファイルに格納される
+
+コピーとシリアライズのAPIも提供されている：
+
+// configuration_copysets
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	ctx.env.FOO = 'TEST'
+
+	env_copy = ctx.env.derive() <1>
+
+	node = ctx.path.make_node('test.txt') <2>
+	env_copy.store(node.abspath()) <3>
+
+	from waflib.ConfigSet import ConfigSet
+	env2 = ConfigSet() <4>
+	env2.load(node.abspath()) <5>
+
+	print(node.read()) <6>
+---------------
+
+<1> _ctx.env_ のコピーを生成 - これは浅いコピー
+<2> ファイル +test.txt+ を表すノードオブジェクトを生成するために *ctx.path* を使う
+<3> +test.txt+ に *env_copy* の内容を格納
+<4> 空の新たなConfigSetオブジェクトを生成
+<5> +test.txt+ から値を読み込む
+<6> +test.txt+ の内容を表示
+
+実行すると次のアウトプットが得られる：
+
+[source,shishell]
+---------------
+$ waf distclean configure
+'distclean' finished successfully (0.005s)
+FOO = 'TEST'
+PREFIX = '/usr/local'
+'configure' finished successfully (0.006s)
+---------------
+
+// ===== multiple configuration sets?
+
+=== configureのユーティリティ
+
+==== コンフィギュレーションメソッド
+
+以前に見た _ctx.find_program_ メソッドはコンフィギュレーションメソッドの例だ。
+ここで他の例も示す：
+
+// configuration_methods
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	ctx.find_program('touch', var='TOUCH')
+	ctx.check_waf_version(mini='1.6.10')
+	ctx.find_file('fstab', ['/opt', '/etc'])
+---------------
+
+コンテキストクラス _waflib.Configure.ConfigurationContext_ によってこれらのメソッドは提供されるが、 http://docs.waf.googlecode.com/git/apidocs_16/index.html[API documentation] には掲載されていない。
+モジュール性の理由により、これらは単純な関数として定義され動的に束縛される：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+from waflib.Configure import conf <1>
+
+@conf <2>
+def hi(ctx):
+	print('→ hello, world!')
+
+# hi = conf(hi) <3>
+
+def configure(ctx):
+	ctx.hi() <4>
+---------------
+
+<1> デコレータ *conf* をインポート
+<2> メソッド _hi_ をコンフィギュレーションコンテキストクラスにバインドするためにデコレータを使う。 実際には、コンフィギュレーションメソッドはconfigureフェーズでのみ使われる。
+<3> デコレータは単純なPythonの関数。 Python2.3は *@* の構文をサポートしないため、関数は関数の宣言の後に呼ばなくてはならない
+<4> コンフィギュレーションコンテキストクラスにバインドしたメソッドを使う
+
+実行すると次のアウトプットが得られる：
+
+[source,shishell]
+---------------
+$ waf configure
+→ hello, world!
+'configure' finished successfully (0.005s)
+---------------
+
+==== Wafツールのロードと使い方
+
+効率性のため、少数のメソッドのみがWafのコアに存在する。
+ほとんどのコンフィギュレーションメソッドは *Wafツール* と呼ばれる拡張によってロードされる。
+主要なツールはフォルダ +waflib/Tools+ にあり、 +waflib/extras+ にテストフェーズでのツールがある。
+しかし、Wafツールはファイルシステムのどこからでも使うことができる。
+
+ここでコマンドラインオプションから 'ctx.env.DANG' に値をセットする +dang.py+ という名前の非常に単純なWafツールのデモをおこなう：
+
+// configuration_tool
+[source,python]
+---------------
+#! /usr/bin/env python
+# encoding: utf-8
+
+print('→ loading the dang tool')
+
+from waflib.Configure import conf
+
+def options(opt): <1>
+	opt.add_option('--dang', action='store', default='', dest='dang')
+
+@conf
+def read_dang(ctx): <2>
+	ctx.start_msg('Checking for the variable DANG')
+	if ctx.options.dang:
+		ctx.env.DANG = ctx.options.dang <3>
+		ctx.end_msg(ctx.env.DANG)
+	else:
+		ctx.end_msg('DANG is not set')
+
+def configure(ctx): <4>
+	ctx.read_dang()
+---------------
+
+<1> コマンドラインオプションを提供
+<2> 関数 'read_dang' をctx.read_dang()を下で呼ぶための新たなコンフィギュレーションメソッドにバインド
+<3> 現在のコマンドラインオプションから永続的な値をセットする
+<4> ビルドコンテキストのインスタンスをパラメータとして受け付ける _configure_ という名前のコマンドを提供する
+
+ツールを読み込むために、configure中にメソッド 'load' を使わなくてはならない：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def options(ctx):
+    ctx.load('dang', tooldir='.') <1>
+
+def configure(ctx):
+    ctx.load('dang', tooldir='.') <2>
+
+def build(ctx):
+    print(ctx.env.DANG) <3>
+---------------
+
+<1> _dang.py_ で定義されたオプションをロード
+<2> ツールdang.pyを読み込む。デフォルトでは、loadはツールで定義されている 'configure' を呼び出す
+<3> configure中に _ctx.env.DANG_ の値を変更する
+
+実行すると、次のアウトプットになる：
+
+[source,shishell]
+---------------
+$ waf configure --dang=hello
+→ loading the dang tool
+Checking for DANG                        : hello <1>
+'configure' finished successfully (0.006s)
+
+$ waf
+→ loading the dang tool <2>
+Waf: Entering directory `/tmp/configuration_dang/build'
+hello
+Waf: Leaving directory `/tmp/configuration_dang/build'
+'build' finished successfully (0.004s)
+---------------
+
+<1> 最初にツールはPythonモジュールとしてインポートされ、メソッド _configure_ は _load_ から呼び出される
+<2> configure中にロードされたツールはビルドフェーズでロードされる
+
+==== 複数のコンフィギュレーション
+
+'conf.env' オブジェクトはWafツールもしくはユーザが提供するコンフィギュレーション関数によってアクセスされ修正されるコンフィギュレーションの重要なポイントだ。
+Wafツールはビルドスクリプトのために特別な構造を強制しないので、ツールはデフォルトオブジェクトの内容の修正を行うだけだ。
+ユーザスクリプトは複数の 'env' オブジェクトをコンフィギュレーションで提供することができ、前後で特定の値をセットすることができる：
+
+[source,python]
+---------------
+def configure(ctx):
+	env = ctx.env <1>
+	ctx.setenv('debug') <2>
+	ctx.env.CC = 'gcc' <3>
+	ctx.load('gcc')
+
+	ctx.setenv('release', env) <4>
+	ctx.load('msvc')
+	ctx.env.CFLAGS = ['/O2']
+
+	print ctx.all_envs['debug'] <5>
+---------------
+
+<1> 'conf.env' への参照を保存
+<2> コピーして 'conf.env' を置き換える
+<3> 'conf.env' を変更
+<4> 再びコピーして 'conf.env' を最初の値に置き換える
+<5> 名前でコンフィギュレーションセットを呼び出す
+
+=== 例外処理
+
+==== コンフィギュレーション例外の発生と補足
+
+configureのヘルパーはconfオブジェクトが提供するメソッドで、例えば 'conf.find_program' メソッドのように、パラメータを探すのを助ける。
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	ctx.find_program('some_app')
+---------------
+
+テストが正常に完了しない場合、 'waflib.Errors.ConfigurationError' 型の例外が発生する。
+これはオペレーティングシステムの環境で何かが欠けている場合や、特定の条件が満されない場合によく起きる。
+例えば：
+
+[source,shishell]
+---------------
+$ waf
+Checking for program some_app         : not found
+ error: The program some_app could not be found
+---------------
+
+これらの例外は 'conf.fatal' を使って手動で発生させることができる：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	ctx.fatal("I'm sorry Dave, I'm afraid I can't do that")
+---------------
+
+これは同じようなエラーを表示する：
+
+[source,shishell]
+---------------
+$ waf configure
+ error: I'm sorry Dave, I'm afraid I can't do that
+$ echo $?
+1
+---------------
+
+次はコンフィギュレーション例外の補足の仕方だ：
+
+// configuration_exception
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	try:
+		ctx.find_program('some_app')
+	except ctx.errors.ConfigurationError: <1>
+		self.to_log('some_app was not found (ignoring)') <2>
+---------------
+
+<1> 利便性のために、モジュール _waflib.Errors_ は _ctx.errors_ にバインドされている
+<2> ログファイルに情報を追加
+
+実行結果は次のようになる：
+
+[source,shishell]
+---------------
+$ waf configure
+Checking for program some_app            : not found
+'configure' finished successfully (0.029s) <1>
+
+$ cat build/config.log <2>
+# project  configured on Tue Jul 13 19:15:04 2010 by
+# waf 1.6.10 (abi 98, python 20605f0 on linux2)
+# using /home/waf/bin/waf configure
+#
+Checking for program some_app
+not found
+find program=['some_app'] paths=['/usr/local/bin', '/usr/bin'] var=None -> ''
+from /tmp/configuration_exception: The program ['some_app'] could not be found
+some_app was not found (ignoring) <3>
+---------------
+
+<1> configureがエラーなしで完了
+<2> configureの実行に関する有用な情報を含んだログファイル
+<3> 追加したログのエントリ
+
+手動でエラーを補足するのは不便なため、すべての *@conf* メソッドは 'mandatory' という名前のパラメータを受け付け、コンフィギュレーションエラーを抑制する。
+前のコードスニペットは次と等価だ：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	ctx.find_program('some_app', mandatory=False)
+---------------
+
+一般的なルールとして、クライアントは決して終了コードや戻値を信頼してはならず、コンフィギュレーション例外を補足しなくてはならない。
+ツールは常にコンフィギュレーションエラーを発生させることでエラーを表示し、クライアントに例外を処理する機会を与える。
+
+==== トランザクション
+
+configureで呼ばれるWafツールは意図をもって 'conf.env' の中身を使用、変更することができる。
+これらの変更は複雑で追跡やアンドゥができなくなる。
+幸運なことに、コンフィギュレーション例外によってロジックを簡略化し、前の状態に簡単に戻ることができる。
+次の例では一度に複数のツールを使うためのトランザクションの使い方を示す：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	for compiler in ('gcc', 'msvc'):
+		try:
+			ctx.env.stash()
+			ctx.load(compiler)
+		except ctx.errors.ConfigurationError:
+			ctx.env.revert()
+		else:
+			break
+	else:
+		ctx.fatal('Could not find a compiler')
+---------------
+
+'stash' の複数の呼出しを作ることができるが、コピーは浅く、(リストなどの)複雑なオブジェクトの変更は永続的だ。
+そのため、次のコードはconfigureのアンチパターンだ：
+
+[source,python]
+---------------
+def configure(ctx):
+	ctx.env.CFLAGS += ['-O2']
+---------------
+
+代わりに常にこのメソッドを使うべきだ：
+
+[source,python]
+---------------
+def configure(ctx):
+    ctx.env.append_value('CFLAGS', '-O2')
+---------------
+
+////
+To conclude this chapter on the configuration, we will now insist a little bit on the roles of the configuration context and of the configuration set objects. The configuration context is meant as a container for non-persistent data such as methods, functions, code and utilities. This means in particular that the following is an acceptable way of sharing data with scripts and tools:
+
+[source,python]
+---------------
+def configure(ctx):
+    ctx.logfile = ctx.bldnode.make_node('config.log').abspath()
+    ctx.load('some_tool') # ... def configure(ctx): print ctx.logfile ...
+---------------
+
+In practice, values are frequently needed in the build section too. Adding the data to 'conf.env' is therefore a logical way of separating the concerns between the code (configuration methods) and the persistent data.
+
+A typical application of this is 
+////
+

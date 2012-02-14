@@ -1,0 +1,411 @@
+== 一歩進んだビルド定義
+
+=== コマンドのカスタマイズ
+==== コンテキストの継承
+
+_waflib.Context.Context_ のインスタンスはカスタムコマンドにデフォルトで用いられる。
+カスタムコンテキストのオブジェクトを提供するには、コンテキストのサブクラスを作る必要がある。
+
+// advbuild_subclass
+[source,python]
+---------------
+def configure(ctx):
+	print(type(ctx))
+
+def foo(ctx): <1>
+	print(type(ctx))
+
+def bar(ctx):
+	print(type(ctx))
+
+from waflib.Context import Context
+
+class one(Context):
+	cmd = 'foo' <2>
+
+class two(Context):
+	cmd = 'tak' <3>
+	fun = 'bar'
+---------------
+
+<1> デフォルトのコンンテキストを使ったコマンド
+<2> _foo_ コマンドのためにコンテキストクラスを構築
+<3> _tak_ という名前の新しいコマンドを宣言するが、スクリプト内の _bar_ 関数を呼び出す
+
+実行結果の出力は次のようになるだろう。
+
+[source,shishell]
+---------------
+$ waf configure foo bar tak
+Setting top to    : /tmp/advbuild_subclass
+Setting out to    : /tmp/advbuild_subclass/build
+<class 'waflib.Configure.ConfigurationContext'>
+'configure' finished successfully (0.008s)
+<class 'wscript.one'>
+'foo' finished successfully (0.001s)
+<class 'waflib.Context.Context'>
+'bar' finished successfully (0.001s)
+<class 'wscript.two'>
+'tak' finished successfully (0.001s)
+---------------
+
+カスタムコンテキストの典型的な応用例は *ctx.env* に読み込まれたコンフィギュレーションデータを使うためにビルドコンテキストのサブクラスを作ることだ。
+
+[source,python]
+---------------
+def configure(ctx):
+	ctx.env.FOO = 'some data'
+
+def build(ctx):
+	print('build command')
+
+def foo(ctx):
+	print(ctx.env.FOO)
+
+from waflib.Build import BuildContext
+class one(BuildContext):
+	cmd = 'foo'
+	fun = 'foo'
+---------------
+
+出力は次のようになる
+
+[source,shishell]
+---------------
+$ waf configure foo
+Setting top to    : /tmp/advbuild_confdata
+Setting out to    : /tmp/advbuild_confdata/build
+'configure' finished successfully (0.006s)
+Waf: Entering directory `/disk/comp/waf/docs/book/examples/advbuild_confdata/build'
+some data
+Waf: Leaving directory `/disk/comp/waf/docs/book/examples/advbuild_confdata/build'
+'foo' finished successfully (0.004s)
+---------------
+
+備考: buildコマンドはこのシステムを使っている： _waf install_ → _waflib.Build.InstallContext_, _waf step_ → _waflib.Build.StepContext_, など
+
+==== コマンドの合成
+
+既存のコマンドと互換性のないコンテキストクラスを再利用するには、それらの互換性のないクラスを _コマンドスタック_ に挿入する。
+
+// advbuild_composition
+[source,python]
+---------------
+def configure(ctx):
+	pass
+
+def build(ctx):
+	pass
+
+def cleanbuild(ctx):
+	from waflib import Options
+	Options.commands = ['clean', 'build'] + Options.commands
+---------------
+
+このテクニックはテストケースを書くときに便利だ。
+'waf test' を実行することで、次のスクリプトはプロジェクトのconfigureを行い、ソースファイルをsourceディレクトリに作り、プログラムをビルドし、ソースを変更し、プログラムを再ビルドする。
+このケースでは、ヘッダが変更されたため（暗黙的な依存性）、プログラムは再ビルドされる。
+
+[source,python]
+---------------
+def options(ctx):
+	ctx.load('compiler_c')
+
+def configure(ctx):
+	ctx.load('compiler_c')
+
+def setup(ctx):
+	n = ctx.path.make_node('main.c')
+	n.write('#include "foo.h"\nint main() {return 0;}\n')
+
+	global v
+	m = ctx.path.make_node('foo.h')
+	m.write('int k = %d;\n' % v)
+	v += 1
+
+def build(ctx):
+	ctx.program(source='main.c', target='app')
+
+def test(ctx):
+	global v <1>
+	v = 12
+
+	import Options <2>
+	lst = ['configure', 'setup', 'build', 'setup', 'build']
+	Options.commands = lst + Options.commands
+---------------
+
+<1> 異なるコマンド間でデータを共有するためにグローバル変数を使う
+<2> testコマンドはコマンドを追加するために使われる
+
+次のような出力が見られるだろう。
+
+[source,shishell]
+---------------
+$ waf test
+'test' finished successfully (0.000s)
+Setting top to                           : /tmp/advbuild_testcase
+Setting out to                           : /tmp/advbuild_testcase/build
+Checking for 'gcc' (c compiler)          : ok
+'configure' finished successfully (0.092s)
+'setup' finished successfully (0.001s)
+Waf: Entering directory `/tmp/advbuild_testcase/build'
+[1/2] c: main.c -> build/main.c.0.o
+[2/2] cprogram: build/main.c.0.o -> build/app
+Waf: Leaving directory `/tmp/advbuild_testcase/build'
+'build' finished successfully (0.137s)
+'setup' finished successfully (0.002s)
+Waf: Entering directory `/tmp/advbuild_testcase/build'
+[1/2] c: main.c -> build/main.c.0.o
+[2/2] cprogram: build/main.c.0.o -> build/app
+Waf: Leaving directory `/tmp/advbuild_testcase/build'
+'build' finished successfully (0.125s)
+---------------
+
+==== Wafツールからのコマンドのバインディング
+
+トップレベルのwscriptが読み込まれると、Pythonのモジュールに変換され、メモリ上に保持される。
+コマンドは関数をモジュールに加えることで、動的に追加される。
+プロジェクト中のタスクジェネレータの数を数えるWafツールを披露しよう。
+
+// advbuild_cmdtool
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def options(opt):
+	opt.load('some_tool', tooldir='.')
+
+def configure(conf):
+	pass
+---------------
+
+Wafはconfigureとビルドのために一度読み込まれる。
+たとえ実際にはoptionsを提供しない場合でも、ツールが常に有効であることを確かなものにするために、optionsを読み込まなくてはならない。
+'wscript' ファイルと同階層にある、我々のツール 'some_tool.py' は次のコードを含む。
+
+[source,python]
+---------------
+from waflib import Context
+
+def cnt(ctx):
+	"""do something"""
+	print('just a test')
+
+Context.g_module.__dict__['cnt'] = cnt
+---------------
+
+実行結果は次のようになる。
+
+[source,shishell]
+---------------
+$ waf configure cnt
+Setting top to   : /tmp/examples/advbuild_cmdtool
+Setting out to   : /tmp/advbuild_cmdtool/build
+'configure' finished successfully (0.006s)
+just a test
+'cnt' finished successfully (0.001s)
+---------------
+
+=== ビルド出力のカスタマイズ
+
+==== 複数のconfigure
+
+環境変数 _WAFLOCK_ はconfigureのロックやデフォルトのビルドディレクトリを指定するのに使われる。
+次のプロジェクトを見てみよう。
+
+// advbuild_waflock
+[source,python]
+---------------
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(rule='touch ${TGT}', target='foo.txt')
+---------------
+
+実行すると _WAFLOCK_ は変更される。
+
+[source,shishell]
+---------------
+$ export WAFLOCK=.lock-wafdebug <1>
+
+$ waf
+Waf: Entering directory `/tmp/advbuild_waflock/debug'
+[1/1] foo.txt:  -> debug//foo.txt <2>
+Waf: Leaving directory `/tmp/advbuild_waflock/debug'
+'build' finished successfully (0.012s)
+
+$ export WAFLOCK=.lock-wafrelease
+
+$ waf distclean configure
+'distclean' finished successfully (0.001s)
+'configure' finished successfully (0.176s)
+
+$ waf
+Waf: Entering directory `/tmp/advbuild_waflock/release' <3>
+[1/1] foo.txt:  -> release/foo.txt
+Waf: Leaving directory `/tmp/advbuild_waflock/release'
+'build' finished successfully (0.034s)
+
+$ tree -a
+.
+|-- .lock-debug <4>
+|-- .lock-release
+|-- debug
+|   |-- .wafpickle-7
+|   |-- c4che
+|   |   |-- build.config.py
+|   |   `-- _cache.py
+|   |-- config.log
+|   `-- foo.txt
+|-- release
+|   |-- .wafpickle-7
+|   |-- c4che
+|   |   |-- build.config.py
+|   |   `-- _cache.py
+|   |-- config.log
+|   `-- foo.txt
+`-- wscript
+---------------
+
+<1> ロックファイルはプロジェクトのコンフィギュレーションと使われるビルドディレクトリを指す
+<2> これらのファイルはビルドディレクトリ +debug+ の出力結果
+<3> _release_ コンフィギュレーションでは異なるロックファイルとビルドディレクトリが使われる
+<4> プロジェクトディレクトリの中には2つのロックファイルと2つのビルドフォルダが含まれる
+
+ロックファイルはWafファイルの中の変数が変わることにより変更され得る。
+
+[source,python]
+---------------
+from waflib import Options
+Options.lockfile = '.lock-wafname'
+---------------
+
+備考: Wafロックファイルにより参照される出力ディレクトはWafスクリプトで付えられないときのみ、有効になる
+
+
+==== 出力ディレクトリの変更
+
+===== Variant ビルド
+
+前のセクションでは2つの異なるコンフィギュレーションは同じようなビルドに使われていた。
+ここでは同一のコンフィギュレーションを継承する、異なる出力ターゲットのフォルダをもつ2つのビルドの作り方を示す。
+まずはプロジェクトファイルから始めよう。
+
+// advbuild_variant
+[source,python]
+---------------
+def configure(ctx):
+	pass
+
+def build(ctx):
+	ctx(rule='touch ${TGT}', target=ctx.cmd + '.txt') <1>
+
+from waflib.Build import BuildContext
+class debug(BuildContext): <2>
+	cmd = 'debug'
+	variant = 'debug' <3>
+---------------
+
+<1> 呼びだされるコマンドは _self.cmd_
+<2> ビルドコンテキストを継承した _debug_ コマンドの作成
+<3> _debug_ コマンドのターゲットの用フォルダの宣言
+
+このプロジェクトは2つのことなるビルド _build_ と _debug_ を宣言する。
+主力結果を検証しよう。
+
+[source,shishell]
+---------------
+waf configure build debug
+Setting top to   : /tmp/advbuild_variant
+Setting out to   : /tmp/advbuild_variant/build
+'configure' finished successfully (0.007s)
+Waf: Entering directory `/tmp/advbuild_variant/build'
+[1/1] build.txt:  -> build/build.txt
+Waf: Leaving directory `/tmp/advbuild_variant/build'
+'build' finished successfully (0.020s)
+Waf: Entering directory `/tmp/build_variant/build/debug'
+[1/1] debug.txt:  -> build/debug/debug.txt <1>
+Waf: Leaving directory `/tmp/advbuild_variant/build/debug'
+'debug' finished successfully (0.021s)
+
+$ tree
+.
+|-- build
+|   |-- build.txt <2>
+|   |-- c4che
+|   |   |-- build.config.py
+|   |   `-- _cache.py
+|   |-- config.log
+|   `-- debug
+|       `-- debug.txt <3>
+`-- wscript
+---------------
+
+<1> コマンドは _build/variant_ から実行される
+<2> デフォルトコマンド _build_ はvariantを持たない
+<3> _debug_ ターゲットはbuildディレクトリの中のvariant
+
+===== variantに対するコンフィギュレーション
+
+variantはconfigureの段階で作られた異なるコンフィギュレーションセットを必要とする。
+ここに例を示す。
+
+// advbuild_variant
+[source,python]
+---------------
+def options(opt):
+	opt.load('compiler_c')
+
+def configure(conf):
+	conf.setenv('debug') <1>
+	conf.load('compiler_c')
+	conf.env.CFLAGS = ['-g'] <2>
+
+	conf.setenv('release')
+	conf.load('compiler_c')
+	conf.env.CFLAGS = ['-O2']
+
+def build(bld):
+	if not bld.variant: <3>
+		bld.fatal('call "waf build_debug" or "waf build_release", and try "waf --help"')
+	bld.program(source='main.c', target='app', includes='.') <4>
+
+from waflib.Build import BuildContext, CleanContext, \
+	InstallContext, UninstallContext
+
+for x in 'debug release'.split():
+	for y in (BuildContext, CleanContext, InstallContext, UninstallContext):
+		name = y.__name__.replace('Context','').lower()
+		class tmp(y): <5>
+			cmd = name + '_' + x
+			variant = x
+---------------
+
+<1> 'conf.env' から返され 'c4che/debug_cache.py' に保存される新たなコンフィギュレーションセットを作成
+<2> コンフィギュレーションセットのいくつかのデータの変更
+<3> variantがsetであることを確認することで, 通常の 'build' や 'clean' 、'install' コマンドを無効にする
+<4> 'bld.env' は適切なvariantのコンフィギュレーションsetを読み込む('debug' の中の場合 'debug_cache.py')
+<5> 'clean_debug' や 'install_debug' などの新たなコマンドの作成(クラス名は何でもよい)
+
+実行結果の出力は次のようなものになるだろう。
+
+[source,shishell]
+---------------
+$ waf clean_debug build_debug clean_release build_release
+'clean_debug' finished successfully (0.005s)
+Waf: Entering directory `/tmp/examples/advbuild_variant_env/build/debug'
+[1/2] c: main.c -> build/debug/main.c.0.o
+[2/2] cprogram: build/debug/main.c.0.o -> build/debug/app
+Waf: Leaving directory `/tmp/examples/advbuild_variant_env/build/debug'
+'build_debug' finished successfully (0.051s)
+'clean_release' finished successfully (0.003s)
+Waf: Entering directory `/tmp/examples/advbuild_variant_env/build/release'
+[1/2] c: main.c -> build/release/main.c.0.o
+[2/2] cprogram: build/release/main.c.0.o -> build/release/app
+Waf: Leaving directory `/tmp/examples/advbuild_variant_env/build/release'
+'build_release' finished successfully (0.052s)
+---------------
+

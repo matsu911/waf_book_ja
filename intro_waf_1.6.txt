@@ -1,0 +1,670 @@
+Introduction to Waf 1.6 (draft)
+===============================
+:author: Thomas Nagy
+:quotes.++:
+
+[preface]
+== イントロダクション
+
+Copyright (C) 2010 Thomas Nagy
+
+Copies of this document may be redistributed, verbatim, and for non-commercial
+purposes. The license for this document is
+ http://creativecommons.org/licenses/by-nc-nd/3.0/[by-nc-nd license].
+
+=== waf 1.5の制限
+
+wafビルドシステムは当初、単一のプログラミング言語に基づいた、autotoolに基づいたビルドシステムの代替を提供するために作られた。
+開発を簡単にするために、わずかではあるがいくつかの想定がなされたが、時を経るにつれ、これが特定のコーナーケースに対して明らかな制限となった：
+
+- いくつかのプロジェクトでは、ファイルはソースディレクトリに生成され、ソース管理システムで管理される
+- 1種類以上のbuildコマンドが存在し得る
+- いくつかのコンフィギュレーションAPIはビルドセクションで有用となり得る
+- wafを別のシステムでライブラリとして使うことが興味深いものになり得る
+- いつくかのAPIはプライベートだった(ノードオブジェクト)
+
+=== waf 1.6のゴール
+
+Waf 1.6の主要なゴールは:
+
+. Waf 1.5で存在する多くの想定や制限の削除(ノード、ビルドディレクトリ、モジュール間のカップリングの低減)
+. コードベースの最適化(実行時間、ソースコードのサイズ、異なるPythonのバージョンでの互換性)
+. ユーザエクスペリエンスの改善(APIをより直感的に、さらなるクラスと関数の公開、エラー処理の改善)
+
+=== この文書の目的
+
+waf API(モジュール、クラス、関数)は前に記述された変更を反映するように変更されていなくてはならない。
+この文書は以前のバージョンであるWaf 1.5と比較した主要な変更点について述べる。
+Waf 1.6のThe Waf bookは新しいユーザ向けおよびWaf 1.4などの以前のバージョンからのアップグレードを行うプロジェクトのためのリファレンスだ。
+
+
+
+
+
+
+== ユーザスクリプトでの主な変更点
+
+=== アトリビュート 'srcdir' と 'blddir'
+
+アトリビュート 'srcdir' と 'blddir' はそれぞれ 'top' と 'out' に名前が変更された:
+
+[source,python]
+---------------
+#srcdir = '.' # old
+#blddir = 'build' # old
+top = '.'
+out = 'build'
+
+def configure(ctx):
+    pass
+---------------
+
+=== 'options' コマンド
+
+set_optionsメソッドは 'options' に名前が変更された:
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def options(opt):
+	pass
+
+def configure(ctx):
+	pass
+---------------
+
+=== 'recurse'メソッド
+
+すべてのコマンドのためのコンテキストクラスは 'recurse' という名前のユニークなメソッドをもつ。
+メソッド 'add_subdirs' と 'sub_config' 、 'sub_options' は削除された：
+
+[source,python]
+---------------
+def options(ctx):
+	#ctx.sub_options('src') # old
+	ctx.recurse('src')
+
+def configure(ctx):
+	#ctx.sub_config('src') # old
+	ctx.recurse('src')
+
+def build(ctx):
+	#ctx.add_subdirs('src') # old
+	ctx.recurse('src')
+---------------
+
+=== ツールの宣言
+
+ユーザスクリプトとの整合性のため、wafツールのメソッド'detect'は'configure'にリネームされた。
+いまやメソッド'set_options'は'options'になりwafスクリプトと整合的だ。
+
+=== タスクジェネレータの宣言
+
+ビルドコンテキストメソッド'new_task_gen'は廃止され、'__call__'に置き換えられた。 
+タスクジェネレータサブクラスは完全に削除され、キーワード引数のみが受け付けられる。
+例：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	pass
+
+def build(ctx):
+	# ctx.new_task_gen('cc', 'cprogram', source='main.c', target='app') # old
+	ctx(features='c cprogram', source='main.c', target='app')
+---------------
+
+
+
+
+
+== wafモジュールのリファクタリング
+
+=== 構文とネームスペース
+
+現在Python3はデフォルトの構文だ。
+wafは修正なしに2.6、2.7、3.0および3.1で動作する。
+実行すると検査が行われ、必要ならばPython 2.3、2.4および2.5コードは変換される。
+Python3のコードをPython2で動作するようにするのはPython2のコードをPython3で動作させるのに比べ格段に易しい。
+
+wafツールとモジュールは次のディレクトリ構造に再構成された：
+
+[source,shishell]
+---------------
+waflib
+|- extras
+`- Tools
+---------------
+
+他のプロジェクトとの衝突を避けるため、wafライブラリではPythonネームスペースが使われている。
+これはインポートシステムが変わることを意味する：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	# import Options, Utils # old
+	from waflib import Options, Utils
+
+	print(Options.options)
+	print(Utils.to_list("a b c"))
+---------------
+
+=== 追加および削除されたコアモジュール
+
+次のモジュールが削除された：
+
+- py3fixes: デフォルトでpython3の構文を使うシンタックス
+- Constants.py: 定数はこれを使うモジュールに移動した
+- pproc.py: システムのsubprocessモジュールがデフォルトで使われる
+
+次のモジュールが追加された：
+
+- Context.py: wafコマンドのベースクラス(ビルドコンテキストやコンフィギュレーションコンテキストなど)
+- Errors.py: wafのコードで使われる例外
+- fixpy2.py: the wafのコードをpython2.3と2.4、2.6で実行できるようにするためのルーチン
+
+モジュールEnvironment.pyはConfigSet.pyにリネームされた
+
+=== モジュールの依存関係
+
+コアモジュールは循環したインポートを取り除くためにリファクタリングされた。
+次のダイアグラムはコアモジュール間のグローバルな依存関係を表す。
+'Scripting'が'Utils'を使っているなどのエッセンシャルではない依存関係は隠されている。
+
+image::core.eps["wafコアモジュール間の依存関係",height=600,align="center"]
+
+
+
+
+== 新しいコンテキストクラス
+
+=== コンテキストサブクラス
+
+次は'waf build'が呼ばれたときにインスタンス化されるビルドコンテキストのサブクラスを生成する。
+これはスクリプトのユーザ関数'build'を実行する。
+
+[source,python]
+---------------
+from waflib.Build import BuildContext
+class debug_context(BuildContext):
+    cmd = 'debug'
+    fun = 'build'
+---------------
+
+=== コンテキストサブクラスとノード
+
+現在、ノードオブジェクトはコマンドコンテキストからアクセス可能だ。
+
+[source,python]
+---------------
+from waflib.Context import Context
+class package_class(Context):
+    cmd = 'package'
+    fun = 'package'
+
+def package(ctx):
+    print(ctx.path.ant_glob('wscript'))
+---------------
+
+出力結果は次のようになる:
+
+[source,shishell]
+---------------
+$ waf package
+[/disk/comp/waf-1.6/demos/c/wscript]
+'package' finished successfully (0.006s)
+---------------
+
+=== 新しいバリアントシステム
+
+前のバージョンのバリアントシステムは削除された。
+新しいバリアントシステムではタスクのアウトプットディレクトリの宣言が簡単になった：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+    ctx.load('gcc')
+
+def build(ctx):
+    tg = ctx(features='c', source='main.c')
+    if ctx.cmd == 'debug':
+        tg.cflags = ['-g']
+
+from waflib.Build import BuildContext, CleanContext
+class debug_build(BuildContext):
+    cmd = 'debug'
+    variant = 'debug_'
+
+class debug_clean(CleanContext):
+    cmd = 'clean_debug'
+    variant = 'debug_'
+---------------
+
+デフォルトビルドのアウトプットは'build/'に書き出されるが、デバッグ用のアウトプットは'build/debug_'に書き出される：
+
+[source,shishell]
+---------------
+waf clean clean_debug build debug -v
+'clean' finished successfully (0.034s)
+'clean_debug' finished successfully (0.007s)
+Waf: Entering directory `/disk/comp/waf-1.6/demos/c/gnu/build'
+[1/1] c: main.c -> build/main.c.0.o
+00:36:41 runner ['/usr/bin/gcc', '../main.c', '-c', '-o', 'main.c.0.o']
+Waf: Leaving directory `/disk/comp/waf-1.6/demos/c/gnu/build'
+'build' finished successfully (0.075s)
+Waf: Entering directory `/disk/comp/waf-1.6/demos/c/gnu/build/debug_'
+[1/1] c: main.c -> build/debug_/main.c.0.o
+00:36:41 runner ['/usr/bin/gcc', '-g', '../../main.c', '-c', '-o', 'main.c.0.o']
+Waf: Leaving directory `/disk/comp/waf-1.6/demos/c/gnu/build/debug_'
+'debug' finished successfully (0.082s)
+---------------
+
+
+
+== 'Node' クラス
+
+=== 新しいノードクラスのデザイン
+
+ノードオブジェクトはファイルやフォルダを表現するために使われる。
+waf1.6ではビルドフォルダはもはやバーチャルではなく、バリアントに依存しない。
+これらは正確に一つのノードによって表される：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+    pass
+
+def build(ctx):
+	#print(ctx.path.abspath(ctx.env)) # old
+	print(ctx.path.get_bld().abspath()) # Waf 1.6
+---------------
+
+メソッド'ant_glob'はもはやビルドファイルを走査するために'bld'引数を受け付けないので、適切なノードに対して呼ばなくてはならない：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+    pass
+
+def build(ctx):
+    # ctx.path.ant_glob('*.o', src=False, bld=True, dir=False) # old
+    ctx.path.get_bld().ant_glob('*.o', src=True, dir=False) # equivalent in Waf 1.6
+---------------
+
+いまやメソッド'ant_glob'はファイルやフォルダを見るつけるためのデフォルトだ。
+結果として、メソッド'Node.find_iter'と'task_gen.find_sources_in_dirs'や'bld.install_files'のglob機能は削除された。
+
+
+=== ソースディレクトリや他のディレクトリにあるターゲット
+
+現在、ビルドはソースディレクトリ以下のファイル(バージョン付のファイル)をアップデートする。
+この場合、タスクシグネチャはノードシグネチャとして使うことができない(ソースファイルのシグネチャはファイルのハッシュから計算される)。
+ここに例を示す：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	pass
+
+def build(ctx):
+	# create the node next to the current wscript file - no build directory
+	node = ctx.path.make_node('foo.txt')
+	ctx(rule='touch ${TARGET}', always=True, update_outputs=True, target=node)
+---------------
+
+ビルドディレクトリ以外に存在するノードのために、ファイルが作成もしくは変更された直後にノードシグネチャはファイルハッシュに対してセットされなくてはならない(デフォルトでセットされるタスクシグネチャではない)：
+
+[source,python]
+---------------
+import Task
+
+@Task.update_outputs
+class copy(Task.Task):
+	run_str = '${CP} ${SRC} ${TGT}'
+---------------
+
+推奨されないにも係わらず、ビルドディレクトリを使用することを避けることも可能だ：
+
+[source,python]
+---------------
+top = '.'
+out = '.'
+
+def configure(ctx):
+    pass
+---------------
+
+=== さまざまなアトリビュートでのノードの使用
+
+現在、ノードはタスクジェネレータのアトリビュートsourceおよびtargetで受け付けられる。
+
+[source,python]
+---------------
+def configure(ctx):
+    pass
+
+def build(ctx):
+    src = ctx.path.find_resource('foo.a')
+    tgt = ctx.path.find_or_declare('foo.b')
+
+    ctx(rule='cp ${SRC} ${TGT}', source=[src], target=[tgt])
+---------------
+
+インクルードの場合、ノードは追加するインクルードパスの制御に使うことができる：
+
+[source,python]
+---------------
+def configure(ctx):
+    ctx.load('gcc')
+
+def build(ctx):
+	ctx(features='c', source='main.c', includes=[ctx.path])
+	ctx(features='c', source='main.c', includes=[ctx.path.get_bld()])
+---------------
+
+アウトプットは次のようになる：
+
+[source,shishell]
+---------------
+$ waf -v
+Waf: Entering directory `/foo/test/build'
+[1/2] c: main.c -> build/main.c.0.o
+03:01:20 runner ['/usr/bin/gcc', '-I/foo/test', '../main.c', '-c', '-o', 'main.c.0.o']
+[2/2] c: main.c -> build/main.c.1.o
+03:01:20 runner ['/usr/bin/gcc', '-I/foo/test/bld', '../main.c', '-c', '-o', 'main.c.1.o']
+Waf: Leaving directory `/foo/test/build'
+'build' finished successfully (0.476s)
+---------------
+
+ノードオブジェクトが直接受入れられるため、アトリビュート'allnodes'は削除された。
+そしてノードはソースディレクトリのリストに追加する：
+
+[source,python]
+---------------
+from waflib.TaskGen import extension
+@extension('.c.in')
+def some_method(self, node):
+	out_node = node.change_ext('.c')
+	task = self.create_task('in2c', node, out_node)
+
+	#self.allnodes.append(out_node) # old
+	self.source.append(out_node)
+---------------
+
+
+
+
+
+
+
+== c/cxx/d/fortran/assembly/go
+
+現在、 'C' や 'CXX' 、 'D' 、 'FORTRAN' 、 'ASSEMBLY' 、 'GO' 言語のサポートは次の順序で実行される4つのメソッドに基づいている: 'apply_link', 'apply_uselib_local', 'propagate_uselib_vars' そして 'apply_incpaths'。
+
+=== apply_link
+
+タスクジェネレータメソッドapply_linkはタスクジェネレータのフィーチャ名のためのアトリビュートをスキャンし、可能ならば対応するタスククラスを探す。
+もしタスククラスが見つかりアトリビュート'inst_to'がセットされているならば、タスククラスはリンクタスクを生成するのに使われる。
+アトリビュート 'compiled_tasks' に格納されたタスクはリンクタスクへの入力オブジェクトファイル(.o)をセットするのに使われる。
+
+現在、次のクラスは使われタスクジェネレータのアトリビュート 'features' にマッチする： cprogram, cshlib, cstlib, cxxprogram, cxxshlib, cxxstlib, dprogram, dshlib と dstlib。
+
+メソッド 'create_compiled_tasks' は '.o' ファイルを提供するタスクを生成するために使われ、メソッド 'apply_link' と使うために、タスクにアトリビュート 'compiled_tasks' を追加する。
+これはもちろんオプショナルだ。
+
+=== apply_uselib_local
+
+メソッド apply_uselib_local は静的および共有ライブラリを考慮に入れるように変更された。
+リンクタスクの2つのベースクラスが 'waflib.Tools.ccroot' に追加された： 'link_task' と 'stlink_task' 。
+サブクラスの名前は前のセクションのメソッド 'apply_link' で使われる 'features' 名に対応する：
+
+image::cls.eps["クラス階層",width=420,align="center"]
+
+=== propagate_uselib_vars
+
+uselibアトリビュートの処理はローカルライブラリの処理から分離された。
+主要なオペレータは次のようになる：
+
+. 変数名はタスクジェネレータのアトリビュート 'features' から抽出される。例えば 'CFLAGS' や 'LINKFLAGS'
+. それぞれの変数について、小文字のタスクジェネレータのアトリビュートが処理される。例えば、'tg.cflags' の中身は 'tg.env.CFLAGS' に追加される。
+. それぞれのフィーチャーについて、セットされているならば対応する変数が追加される。例えば、もし 'tg.features = "c cprogram"' がセットされていれば、 'c_CFLAGS' と 'cshlib_CFLAGS' は 'tg.env.CFLAGS' に追加される
+. タスクジェネレータのアトリビュート 'uselib' で定義されたそれぞれの変数は対応する変数を追加する。例えば、もし 'tg.uselib = "M"' がセットされていれば、 'tg.env.CFLAGS_M' は 'tg.env.CFLAGS' に追加される
+
+変数名は 'waflib.Tools.ccroot.USELIB_VARS' で定義され、フィーチャー名にバインドされる。
+
+=== apply_incpaths
+
+タスクジェネレータメソッドapply_incpathsはもはやアトリビュート 'CPPPATH' を処理しないが、タスクジェネレータのアトリビュート 'tg.includes' と整合的なアトリビュート 'INCLUDES' を処理する。
+実行後、2つの変数がセットされる：
+
+. 'tg.env.INCPATHS' はコマンドラインに追加するパスのリストを含む('-I' フラグなし)
+. 'tg.includes_nodes' は他のメソッドやスキャナによって使われるノードオブジェクトとしてのパスのリストを含む
+
+=== 実行形式とライブラリのための新しいラッパー
+
+利便性のために、ラッパー 'program' と 'shlib' 、 'stlib' が追加された。
+次の宣言は等価だ：
+
+[source,python]
+---------------
+def build(ctx):
+	ctx(features='cxx cxxprogram', source='main.cpp', target='app1')
+	ctx.program(source='main.cpp', target='app2')
+
+	ctx(features='c cstlib', source='main.cpp', target='app3')
+	ctx.stlib(source='main.cpp', target='app4')
+---------------
+
+
+
+
+== 新しいフィーチャー
+
+=== タスクの依存関係
+
+メソッド'BuildContext.use_the_magic'は消え、タスクのインプットとアウトプットに基づくヒューリスティックがタスク間のコンパイル順序をセットするために使われる。
+コンパイルチェインと直接的でない依存関係のために、いまだに拡張子シンボルを提供することが必要だが、これは例外となるだろう。
+例:
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(ctx):
+	ctx.load('gcc')
+
+def build(ctx):
+	ctx(rule='touch ${TGT}', target='foo.h', ext_out=['.h'])
+	ctx(features='c cprogram', source='main.c', target='app')
+---------------
+
+この場合、拡張子'.h'は、このルールベースのタスクジェネレータによって生成されたユニークなタスクはC/CXXのコンパイル(CとCXXタスクはext_in=['.h']をもつ)の前に処理されなくてはならない、ということを示唆する。
+
+=== コンフィギュレーションAPI
+
+現在、デコレータ'@conf'によってConfigurationContextにバインドされたコイフィギュレーションメソッドはBuildContextクラスにもバインドされている。
+これはコンフィギュレーションAPIはビルドフェーズにおいても使うことができることを意味する。
+
+[source,python]
+---------------
+def options(ctx):
+    ctx.load('compiler_cxx')
+
+def configure(ctx):
+    ctx.load('compiler_cxx')
+    ctx.check(header_name='stdio.h', features='cxx cxxprogram')
+
+def build(bld):
+	bld.program(source='main.cpp', target='app')
+	if bld.cmd != 'clean':
+		bld.check(header_name='sadlib.h', features='cxx cprogram')
+---------------
+
+アウトプットをリダイレクトするためにlogger(Pythonのloggingモジュール)が提供されなくてはならない。
+ここにloggerを生成するための便利なメソッドの使い方の例を示す：
+
+[source,python]
+---------------
+def options(ctx):
+    ctx.load('compiler_cxx')
+
+def configure(ctx):
+    ctx.load('compiler_cxx')
+    ctx.check(header_name='stdio.h', features='cxx cxxprogram')
+
+def build(bld):
+	if bld.cmd != 'clean':
+		from waflib import Logs
+		bld.logger = Logs.make_logger('test.log', 'build')
+		bld.check(header_name='sadlib.h', features='cxx cprogram')
+		bld.logger = None
+---------------
+
+loggerはコンフィギュレーションAPIが使われた後で削除されなくてはならない。
+そうしないとビルドのアウトプットもリダイレクトされてしまう。
+
+=== wafツールのダウンロード
+
+'conf.load'の呼出しはツールが見つからない場合に正常に失敗する。
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	conf.load('swig')
+---------------
+
+オプション '--download' を指定してコンフィギュレーンを行うと、足りないツールをリモートレポジトリからダウンロードすることができる。
+
+[source,shishell]
+---------------
+$ ./waf configure --download
+Checking for Setting top to              : /comp/test
+Checking for Setting out to              : /comp/test/build
+http://waf.googlecode.com/svn//branches/waf-1.6/waflib/extras/swig.py
+downloaded swig from http://waf.googlecode.com/svn//branches/waf-1.6/waflib/extras/swig.py
+Checking for Checking for program swig   : /usr/bin/swig
+'configure' finished successfully (0.408s)
+---------------
+
+リモートおよびロケーションのリストはユーザスクリプトからconfigure可能だ。
+また、関数 'Configure.download_check' を変更して、ホワイトリストからダウンロードされたツールをチェックし、可能性のあるセキュリティーの問題を避けることが推奨されている。
+これはローカルネットワークでは不要かもしれない。
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+from waflib import Configure, Utils, Context
+
+Context.remote_repo = ['http://waf.googlecode.com/svn/']
+Context.remote_locs = ['branches/waf1.6/waflib/extras']
+
+def check(path):
+	if not Utils.h_file(path) in whitelist:
+		raise ValueError('corrupt file, try again')
+Configure.download_check = check
+
+def configure(conf):
+    conf.load('swig')
+---------------
+
+=== 'list' コマンド
+
+コマンド 'list' は"waf build --targets=x"のための有効なターゲット(タスクジェネレータ)を列挙するために使われる。
+
+[source,shishell]
+---------------
+$ waf list
+foo.exe
+my_shared_lib
+my_static_lib
+test_shared_link
+test_static_link
+'list' finished successfully (0.029s)
+
+$ waf clean --targets=foo.exe
+Waf: Entering directory `/disk/comp/waf-1.6/demos/c/build'
+[1/2] c: program/main.c -> build/program/main.c.0.o
+[2/2] cprogram: build/program/main.c.0.o -> build/foo.exe
+Waf: Leaving directory `/disk/comp/waf-1.6/demos/c/build'
+'build' finished successfully (0.154s)
+---------------
+
+=== 'step' コマンド
+
+新しいコマンド 'step' は特定のタスクの実行に使われ、終了ステータスもしくはエラーメッセージを返す。
+これは特にデバッグに有用だ：
+
+[source,shishell]
+---------------
+$ waf clean step --file=test_shlib.c
+'clean' finished successfully (0.017s)
+Waf: Entering directory `/disk/comp/waf-1.6/demos/c/build'
+c: shlib/test_shlib.c -> build/shlib/test_shlib.c.1.o
+ -> 0
+cshlib: build/shlib/test_shlib.c.1.o -> build/shlib/libmy_shared_lib.so
+ -> 0
+Waf: Leaving directory `/disk/comp/waf-1.6/demos/c/build'
+'step' finished successfully (0.146s)
+---------------
+
+実行するタスクを制限するために、名前の前に'in:'か'out:'を付ける：
+
+[source,shishell]
+---------------
+$ waf step --file=out:build/shlib/test_shlib.c.1.o
+Waf: Entering directory `/disk/comp/waf-1.6/demos/c/build'
+c: shlib/test_shlib.c -> build/shlib/test_shlib.c.1.o
+ -> 0
+Waf: Leaving directory `/disk/comp/waf-1.6/demos/c/build'
+'step' finished successfully (0.091s)
+---------------
+
+
+
+
+== 互換性レイヤー
+
+モジュール'waflib.extras.compat15'は互換のレイヤーを提供し、既存のプロジェクトスクリプトに必要な変更はそれほど多くはない。
+
+
+////
+* Environment -> ConfigSet
+* only lists are allowed in ConfigSet
+* only the build-related commands require a configured project
+* rename apply_core -> process_source
+* rename apply_rule -> process_rule
+* rename Task.TaskBase.classes -> Task.classes
+* remove Task.TaskManager and Build.BuildContext.all_task_gen to improve the build group handling
+* infer the build directory from the lock filename
+* post task generators in a lazy manner
+* use tasks for target installation
+* Utils.load_tool -> Context.load_tool
+* improve the exception handling (WscriptError was removed, use WafError)
+////
+

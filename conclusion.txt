@@ -1,0 +1,16 @@
+== Further reading
+
+Wafが提供する機能が多いため、この本では機能を網羅し最新の情報を伝えることはできない。
+さらなる理解と実践のために、読者に次のリンクを推奨する：
+
+.Recommended links
+[options="header"]
+|================
+|リンク|説明
+|http://docs.waf.googlecode.com/git/apidocs_16/index.html|APIドキュメント
+|http://code.google.com/p/waf|Wafプロジェクトのページ
+|http://code.google.com/p/waf/w/list|FAQを含むWafのwiki
+|http://groups.google.com/group/waf-users|Wafのメーリングリスト
+|http://waf-devel.blogspot.com/2011/01/python-32-and-build-system-kit.html|ビルドシステムキットに関する情報
+|================
+

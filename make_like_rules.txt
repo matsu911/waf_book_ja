@@ -1,0 +1,416 @@
+
+== タスクジェネレータ
+
+=== ルールベースのタスクジェネレータ(Makeに類似)
+
+この章では、簡単なターゲットのビルドのためのルールベースのタスクジェネレータの使い方について説明する。
+
+==== 宣言と使い方
+
+ルールに基づいたタスクジェネレータは正確に1つのタスクを生成する特定のタスクジェネレータのカテゴリーだ。
+
+次では、プロジェクトファイル 'wscript' からコピーのために _cp_ コマンドを実行し、 'foobar' を生成するタスクジェネレータを例示する。
+
+// rule_simple
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld( <1>
+		rule   = 'cp ${SRC} ${TGT}', <2>
+		source = 'wscript', <3>
+		target = 'foobar.txt', <4>
+	)
+---------------
+
+<1> 新しいタスクジェネレータを初期化する。すべての引数は 'key=value' の形式だ
+<2> アトリビュート _rule_ は可読な方法で実行するコマンドを表現する(これについては次の章で詳しく触れる).
+<3> ソースファイル。スペース区切の文字列か文字列のリスト
+<4> ターゲットファイル。スペース区切の文字列か文字列のリスト
+
+実行すると次のような出力が得られるだろう：
+
+// rules_simple
+[source,shishell]
+---------------
+$ waf distclean configure build -v
+'distclean' finished successfully (0.000s)
+'configure' finished successfully (0.021s)
+Waf: Entering directory `/tmp/rules_simple/build'
+[1/1] foobar.txt: wscript -> build/foobar.txt <1>
+10:57:33 runner 'cp ../wscript foobar.txt' <2>
+Waf: Leaving directory `/tmp/rules_simple/build'
+'build' finished successfully (0.016s)
+
+$ tree
+.
+|-- build
+|   |-- c4che
+|   |   |-- build.config.py
+|   |   `-- _cache.py
+|   |-- config.log
+|   `-- foobar.txt
+`-- wscript
+
+$ waf <3>
+Waf: Entering directory `/tmp/rules_simple/build'
+Waf: Leaving directory `/tmp/rules_simple/build'
+'build' finished successfully (0.006s)
+
+$ echo " " >> wscript <4>
+
+$ waf
+Waf: Entering directory `/tmp/rules_simple/build'
+[1/1] foobar.txt: wscript → build/foobar.txt <5>
+Waf: Leaving directory `/tmp/rules_simple/build'
+'build' finished successfully (0.013s)
+---------------
+
+<1> 初回の実行でターゲットは正しく作られる
+<2> コマンドラインは '-v' オプションをつけた 'verboseモード' でのみ表示される
+<3> ターゲットは最新なのでタスクは実行されない
+<4> 空白文字を追加し、ソースファイルを変更
+<5> ソースファイルが変更されたので、ターゲットは再度生成される
+
+ルールへの文字列も依存関係の計算に追加される。
+ルールが変更されるとタスクは再度コンパイルされる。
+
+==== ルール関数
+
+ルールは表現文字列もしくはPython関数として与えられる。 
+関数は生成されたタスククラスに割当られる：
+
+// rule_function
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	def run(task): <1>
+		src = task.inputs[0].abspath() <2>
+		tgt = task.outputs[0].abspath() <3>
+		cmd = 'cp %s %s' % (src, tgt)
+		print(cmd)
+		return task.exec_command(cmd) <4>
+
+	bld(
+		rule   = run, <5>
+		source = 'wscript',
+		target = 'same.txt',
+	)
+---------------
+
+<1> ルール関数はタスクインスタンスをパラメータとしてとる
+<2> ソースとターゲットは内部でタスクインスタンスにバインドされたノードオブジェクトとして表現
+<3> コマンドはビルドディレクトリのルートから実行される。 'bldpath' のようなノードのメソッドはコマンドラインの生成を簡単にする
+<4> タスククラスはコマンドを実行するsubprocess.Popen(...)のラッパーを保持する
+<5> 文字列表現の代わりに関数を使用
+
+実行のトレースは次と似たものになる：
+
+[source,shishell]
+---------------
+$ waf distclean configure build
+'distclean' finished successfully (0.001s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/rule_function/out'
+[1/1] same.txt: wscript -> out/same.txt
+cp /tmp/rule_function/wscript /tmp/rule_function/build/same.txt
+Waf: Leaving directory `/tmp/rule_function/out'
+'build' finished successfully (0.010s)
+---------------
+
+ルール関数は成功を意味するためにヌル値(0やNone、False)を返さなくてはならない。
+また、アウトプットに対応するファイルを生成しなくてはならない。
+ルール関数は内部的にスレッドによって実行されるためスレッドセーフなコード(ノードオブジェクトの探索や作成はできない)を書くことが重要となる。
+
+文字列表現とは異なり、関数は一度に複数のコマンドを実行できる。
+
+==== シェルの使用
+
+アトリビュート 'shell' を使うとコマンドの実行のためにシステムのシェルを有効にできる。
+ルールベースのタスクジェネレータを宣言するときに、いくつかの点を覚えておくとよい：
+
+. Wafツールはコマンドの実行にシェルを使わない
+. ユーザコマンドとカスタムタスクジェネレータのためにデフォルトでシェルが使われる
+. シンボル `>' 、 `<' もしくは `&' を含む文字列表現は、シェルを使わずにコマンドを実行するために関数に変換しようとしてもできない
+. 一般に、クオートの問題(例えば、空白文字を含むパス)を避けるために、シェルを使うのは可能であれば常に避けたほうがよい
+. シェルは、win32システムでより顕著な、パフォーマンス上のペナルティをうみだす。
+
+例:
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(rule='cp ${SRC} ${TGT}', source='wscript', target='f1.txt', shell=False)
+	bld(rule='cp ${SRC} ${TGT}', source='wscript', target='f2.txt', shell=True)
+---------------
+
+実行すると、結果は次と似たものになるだろう：
+
+[source,shishell]
+---------------
+$ waf distclean configure build --zones=runner,action
+'distclean' finished successfully (0.004s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/rule/out'
+23:11:23 action <1>
+def f(task):
+	env = task.env
+	wd = getattr(task, 'cwd', None)
+	def to_list(xx):
+		if isinstance(xx, str): return [xx]
+		return xx
+	lst = []
+	lst.extend(['cp'])
+	lst.extend([a.srcpath(env) for a in task.inputs])
+	lst.extend([a.bldpath(env) for a in task.outputs])
+	lst = [x for x in lst if x]
+	return task.exec_command(lst, cwd=wd)
+
+23:11:23 action
+def f(task):
+	env = task.env
+	wd = getattr(task, 'cwd', None)
+	p = env.get_flat
+	cmd = ''' cp %s %s ''' % (" ".join([a.srcpath(env) for a in task.inputs]), <2>
+		" ".join([a.bldpath(env) for a in task.outputs]))
+	return task.exec_command(cmd, cwd=wd)
+
+[1/2] f1.txt: wscript -> out/f1.txt
+23:11:23 runner system command -> ['cp', '../wscript', 'f1.txt'] <3>
+[2/2] f2.txt: wscript -> out/f2.txt
+23:11:23 runner system command ->  cp ../wscript f2.txt
+Waf: Leaving directory `/tmp/rule/out'
+'build' finished successfully (0.017s)
+---------------
+
+<1> 文字列表現は関数に変換される(シェルを使わない).
+<2> シェルによって実行されるコマンド。文字列の連結を大量に行わないように気をつけよう
+<3> 実行するコマンドは 'waf --zones=runner' を呼び出すと表示される。シェルなしで呼び出されると、引数はリストとして表示される
+
+備考: パフォーマンスとメンテナンス性のため、可能な限りシェルを使うのは避けるよう努力しよう
+
+==== インプットとアウトプット
+
+ソースとターゲット引数はMakeに似たタスクジェネレータにはオプショナルで、一度に一つもしくは複数のファイルを指す。
+いくつかの例：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld( <1>
+		rule   = 'cp ${SRC} ${TGT[0].abspath()} && cp ${SRC} ${TGT[1].abspath()}',
+		source = 'wscript',
+		target = 'f1.txt f2.txt',
+		shell  = True
+	)
+
+	bld( <2>
+		source = 'wscript',
+		rule   = 'echo ${SRC}'
+	)
+
+	bld( <3>
+		target = 'test.k3',
+		rule   = 'echo "test" > ${TGT}',
+	)
+
+	bld( <4>
+		rule   = 'echo 1337'
+	)
+
+	bld( <5>
+		rule   = "echo 'task always run'",
+		always = True
+	)
+---------------
+
+<1> インプットまたはルールが変更されたらいつでも '2つのファイル' を生成する。同様に、ルールベースのタスクジェネレータは複数のインプットファイルをとることができる
+<2> インプットまたはルールが変更されたらいつでもコマンドが実行される。宣言されたアウトプットはない
+<3> インプットなし、コマンドが変更されたらいつでもコマンドが実行される
+<4> インプットもアウトプットもなし、文字列表現が変更されたときにのみコマンドが実行される
+<5> インプットもアウトプットもなし、ビルドが呼び出される度にコマンドが実行される
+
+記録するために、これがビルドのアウトプットだ:
+
+[source,shishell]
+---------------
+$ waf distclean configure build
+'distclean' finished successfully (0.002s)
+'configure' finished successfully (0.093s)
+Waf: Entering directory `/tmp/rule/out'
+[1/5] echo 1337:
+1337
+[2/5] echo 'task always run':
+[3/5] echo ${SRC}: wscript
+../wscript
+[4/5] f1.txt f2.txt: wscript -> out/f1.txt out/f2.txt
+task always run
+[5/5] test.k3:  -> out/test.k3
+Waf: Leaving directory `/tmp/rule/out'
+'build' finished successfully (0.049s)
+
+$ waf
+Waf: Entering directory `/tmp/rule/out'
+[2/5] echo 'task always run':
+task always run
+Waf: Leaving directory `/tmp/rule/out'
+'build' finished successfully (0.014s)
+---------------
+
+==== ファイルの内容に対する依存関係
+
+2番目の例として、現在の日付からファイル 'r1.txt' を作る。
+ビルドが実行される度に更新される。
+2番目のファイル 'r2.txt'  は 'r1.txt' から作られる。
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(
+		name   = 'r1', <1>
+		target = 'r1.txt',
+		rule   = '(date > ${TGT}) && cat ${TGT}', <2>
+		always = True, <3>
+	)
+
+	bld(
+		name   = 'r2', <4>
+		target = 'r2.txt',
+		rule   = 'cp ${SRC} ${TGT}',
+		source = 'r1.txt', <5>
+		after  = 'r1', <6>
+	)
+---------------
+
+<1> タスクジェネレータに名前を与え、タスクジェネレータはコマンドを実行するための同じ名前のタスククラスを作る
+<2> 日付とともに 'r1.txt' を作成する
+<3> 依存すべきソースファイルがなく、ルールは決して変更されない。タスクは 'always' アトリビュートを使ってビルドが開始される度に実行されるようにする
+<4> 名前が与えられないとき、ルールがタスククラスの名前として使われる
+<5> 'r1.txt' を 'r2.txt' のソースとして使う。'r1.txt' は前に宣言されたため、依存関係が自動的に追加される('r2.txt' は 'r1.txt' が変更されると再作成される)
+<6> 'r1.txt' を生成するコマンドの後で、 'r2.txt' を生成するコマンドが実行されるようにセットする。アトリビュート 'after' はタスクジェネレータではなく、タスククラス名を参照する。ここでは、ルールベースのタスクジェネレータは 'name' アトリビュートを継承するため、動作する
+
+実行のアウトプットは次のようになる；
+
+[source,shishell]
+---------------
+$ waf distclean configure build -v
+'distclean' finished successfully (0.003s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/rule/out'
+[1/2] r1:  -> out/r1.txt
+16:44:39 runner system command ->  (date > r1.txt) && cat r1.txt
+dom ene 31 16:44:39 CET 2010
+[2/2] r2: out/r1.txt -> out/r2.txt
+16:44:39 runner system command ->  cp r1.txt r2.txt
+Waf: Leaving directory `/tmp/rule/out'
+'build' finished successfully (0.021s)
+
+$ waf -v
+Waf: Entering directory `/tmp/rule/out'
+[1/2] r1:  -> out/r1.txt
+16:44:41 runner system command ->  (date > r1.txt) && cat r1.txt
+dom ene 31 16:44:41 CET 2010
+Waf: Leaving directory `/tmp/rule/out'
+'build' finished successfully (0.016s)
+---------------
+
+r2は 'r1.txt' に *依存* するが、r2は2度目のビルドで実行されなかった。
+実際のところ、タスクr1のシグネチャは変化しておらず、r1はシグネチャとは関係なしに毎回実行されるようにセットされただけだ。
+'r1.txt' のシグネチャは変化していないため、r2のシグネチャも変化せず、 'r2.txt' は最新の状態と判断される。
+
+'on_results' アトリビュートを有効にすることで、アウトプットがファイルの内容を反映し、依存するタスクのリビルドを引き起こすようにする方法を示す：
+
+[source,python]
+---------------
+top = '.'
+out = 'build'
+
+def configure(conf):
+	pass
+
+def build(bld):
+	bld(
+		name   = 'r1',
+		target = 'r1.txt',
+		rule   = '(date > ${TGT}) && cat ${TGT}',
+		always = True,
+		on_results = True,
+	)
+
+	bld(
+		target = 'r2.txt',
+		rule   = 'cp ${SRC} ${TGT}',
+		source = 'r1.txt',
+		after  = 'r1',
+	)
+---------------
+
+'r2.txt' は毎回再生成される:
+
+[source,shishell]
+---------------
+$ waf distclean configure build -v
+'distclean' finished successfully (0.003s)
+'configure' finished successfully (0.001s)
+Waf: Entering directory `/tmp/rule/out'
+[1/2] r1:  -> out/r1.txt
+16:59:49 runner system command ->  (date > r1.txt) && cat r1.txt <1>
+dom ene 31 16:59:49 CET 2010 <2>
+[2/2] r2: out/r1.txt -> out/r2.txt
+16:59:49 runner system command ->  cp r1.txt r2.txt
+Waf: Leaving directory `/tmp/rule/out'
+'build' finished successfully (0.020s)
+
+$ waf -v
+Waf: Entering directory `/tmp/rule/out'
+[1/2] r1:  -> out/r1.txt
+16:59:49 runner system command ->  (date > r1.txt) && cat r1.txt
+dom ene 31 16:59:49 CET 2010 <3>
+Waf: Leaving directory `/tmp/rule/out'
+'build' finished successfully (0.016s)
+
+$ waf -v
+Waf: Entering directory `/tmp/rule/out'
+[1/2] r1:  -> out/r1.txt
+16:59:53 runner system command ->  (date > r1.txt) && cat r1.txt
+dom ene 31 16:59:53 CET 2010 <4>
+[2/2] r2: out/r1.txt -> out/r2.txt
+16:59:53 runner system command ->  cp r1.txt r2.txt
+Waf: Leaving directory `/tmp/rule/out'
+'build' finished successfully (0.022s)
+---------------
+
+<1> クリーンビルドから始めて、'r1.txt' と 'r2.txt' の両方が生成される
+<2> 日時が通知される
+<3> 2番目のビルドが同一の日時に実行されたため、'r1.txt' は変化せず、'r2.txt' は最新の状態
+<4> 3番目のビルドが別の日時に実行されたため、'r1.txt' は変化し、 'r2.txt' は再生成される
+

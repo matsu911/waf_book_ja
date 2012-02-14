@@ -1,0 +1,65 @@
+The Waf Book
+============
+:author: Thomas Nagy
+:quotes.++:
+:numbered!:
+
+{set:PIC:{backend@docbook:.eps:.png}}
+
+[preface]
+== イントロダクション
+
+Copyright (C) 2010-2011 Thomas Nagy
+
+この本のコピーは非商用目的で再配布できます。
+ライセンスは
+http://creativecommons.org/licenses/by-nc-nd/3.0/[by-nc-nd license]
+に従います。
+
+=== ビルドシステムについて一言
+
+ソフトウェアの複雑化に伴い、ソフトウェア作成のプロセスもさらに複雑になってきている。
+今日のソフトウェアは様々な言語、コンパイラ、多くの分散した入力データファイルを必要とする。
+
+ソフトウェアは今やソフトウェアのビルドプロセスを表現するのに用いられており、それは簡単なスクリプト(シェルスクリプトやMakefile)やコンパイラ(CMakeやQMake)、完全なアプリケーション(SCons, Maven, Waf)の形態である。
+ビルドシステムという用語は、アプリケーションのビルドに用いられるツールの設計、として使われる。
+
+=== Wafのフレームワーク
+
+ビルドシステムはビルドするソフトウェアに関していくつかの想定をし、異なる言語やプロジェクトをビルドする際にそれらの想定は典型的に限定される。
+例えば、AntはMakeよりもJavaのプロジェクトにおいては適しているが、単純なC言語のプロジェクトの管理に関してはMakeよりも制限されている。
+プログラミング言語は一貫して進化しており、エンドユーザにとって完全なビルドシステムを作ることは不可能である。
+
+Wafフレームワークは伝統的なビルドシステムと比べて幾分異なっており、 特定の言語のサポートを提供しない。
+ソフトウェアプロジェクトで遭遇する主なユースケースのサポートに焦点をおいている。
+本質的に拡張性を強調した、ビルドシステムの使用に適したコンポーネントのライブラリである。
+しかしながら、デフォルトのディストリビューションが様々なプログラミング言語(C言語やD言語, Ocaml, Javaなど)やツールへのプラグインを含んでおり、柔軟性を失った製品ではない。
+新たな拡張を作ることが標準的かつ推奨されているプラクティスである。
+
+=== この本の目的
+
+この本の目的は実践を通してWafを使い、Waf拡張を記述し、Wafの内部構造を概観していくことで、Wafビルドシステムの使い方を明らかにすることである。
+一般的なビルドシステムについては扱わないが、第二の目的は少数ではあるが、新しいテクニックやパターンをいくつかの例を通して示すことである。
+
+章立ては難易度順に並べられており、WafとPythonの基本的な使い方から始まり、徐々により難しいトピックに掘り下げていくため、章立て順に読んでいくことを推奨する。
+また、本書を読む前にWafのディストリビューションにある例 http://code.google.com/p/waf/source/browse/trunk/demos/[examples] を見ることから始めるのもよいだろう。
+
+:numbered:
+
+include::download.txt[]
+include::execution.txt[]
+include::configuration.txt[]
+include::build.txt[]
+include::nodes.txt[]
+include::advbuild.txt[]
+include::tasks.txt[]
+include::make_like_rules.txt[]
+include::chains.txt[]
+include::task_generators.txt[]
+include::cprog.txt[]
+include::scenarios.txt[]
+include::development.txt[]
+include::architecture.txt[]
+include::conclusion.txt[]
+include::glossary.txt[]
+
