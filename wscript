@@ -116,7 +116,7 @@ def build(bld):
 	bld.add_group() # separator, the documents may require any of the pictures from above
 
 	bld(rule='${ADOC} -a icons=true -a stylesheet=${SRC[1].abspath()} -a iconsdir=. -a toc -d book -o ${TGT} ${SRC[0].abspath()}',
-		source='waf.txt waf.css', target='single.html', scan=ascii_doc_scan)
+		source='waf.txt waf.css', target='index.html', scan=ascii_doc_scan)
 
 	bld(rule='${A2X} -L -a toc --icons-dir=. --icons -D ${gen.path.get_bld().abspath()} -d book -f pdf ${SRC}',
 		source='waf.txt', target='waf.pdf', scan=ascii_doc_scan)
@@ -124,11 +124,11 @@ def build(bld):
 	bld(rule='${A2X} -L -a toc --icons-dir=. --icons -D ${gen.path.get_bld().abspath()} -d article -f pdf ${SRC}',
 		source='intro_waf_1.6.txt', target='intro_waf_1.6.pdf', scan=ascii_doc_scan)
 
-	bld(rule='ln -sf single.html index.html', shell=True)
+	# bld(rule='ln -sf single.html index.html', shell=True)
 
 	if bld.options.exe:
 		def exe(ctx):
-			bld.exec_command('firefox build/single.html')
+			bld.exec_command('firefox build/index.html')
 		bld.add_post_fun(exe)
 
 """
