@@ -1,0 +1,30 @@
+# project wafdocs (0.0.1) configured on Wed Feb 15 07:25:24 2012 by
+# waf 1.6.10 (abi 98, python 20702f0 on linux2)
+# using /usr/local/bin/waf configure
+#
+----------------------------------------
+Setting top to
+/home/matsu911/work/waf_book_ja
+----------------------------------------
+Setting out to
+/home/matsu911/work/waf_book_ja/build
+----------------------------------------
+Checking for program a2x
+/usr/local/bin/a2x
+find program=['a2x'] paths=['/home/matsu911/.rvm/gems/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/gems/ruby-1.9.2-p290@global/bin', '/home/matsu911/.rvm/rubies/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/bin', '/usr/kerberos/bin', '/usr/local/bin', '/bin', '/usr/bin', '/usr/sbin', '/usr/local/sbin', '/home/matsu911/local/bin', '/home/matsu911/bin'] var='A2X' -> '/usr/local/bin/a2x'
+----------------------------------------
+Checking for program asciidoc
+/usr/local/bin/asciidoc
+find program=['asciidoc'] paths=['/home/matsu911/.rvm/gems/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/gems/ruby-1.9.2-p290@global/bin', '/home/matsu911/.rvm/rubies/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/bin', '/usr/kerberos/bin', '/usr/local/bin', '/bin', '/usr/bin', '/usr/sbin', '/usr/local/sbin', '/home/matsu911/local/bin', '/home/matsu911/bin'] var='ADOC' -> '/usr/local/bin/asciidoc'
+----------------------------------------
+Checking for program dia
+/usr/local/bin/dia
+find program=['dia'] paths=['/home/matsu911/.rvm/gems/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/gems/ruby-1.9.2-p290@global/bin', '/home/matsu911/.rvm/rubies/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/bin', '/usr/kerberos/bin', '/usr/local/bin', '/bin', '/usr/bin', '/usr/sbin', '/usr/local/sbin', '/home/matsu911/local/bin', '/home/matsu911/bin'] var='DIA' -> '/usr/local/bin/dia'
+----------------------------------------
+Checking for program convert
+/usr/bin/convert
+find program=['convert'] paths=['/home/matsu911/.rvm/gems/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/gems/ruby-1.9.2-p290@global/bin', '/home/matsu911/.rvm/rubies/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/bin', '/usr/kerberos/bin', '/usr/local/bin', '/bin', '/usr/bin', '/usr/sbin', '/usr/local/sbin', '/home/matsu911/local/bin', '/home/matsu911/bin'] var='CONVERT' -> '/usr/bin/convert'
+----------------------------------------
+Checking for program source-highlight
+/usr/local/bin/source-highlight
+find program=['source-highlight'] paths=['/home/matsu911/.rvm/gems/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/gems/ruby-1.9.2-p290@global/bin', '/home/matsu911/.rvm/rubies/ruby-1.9.2-p290/bin', '/home/matsu911/.rvm/bin', '/usr/kerberos/bin', '/usr/local/bin', '/bin', '/usr/bin', '/usr/sbin', '/usr/local/sbin', '/home/matsu911/local/bin', '/home/matsu911/bin'] var='SOURCE_HIGHLIGHT' -> '/usr/local/bin/source-highlight'
